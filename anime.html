@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>YumeVerse | Ficha anime</title>
+  <meta name="description" content="Ficha completa de anime con episodios, sinopsis, metadatos y comentarios." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg" aria-hidden="true">
+    <div class="bg-layer bg-1"></div>
+    <div class="bg-layer bg-2"></div>
+    <div class="bg-noise"></div>
+  </div>
+
+  <header class="header glass">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">YV</span>
+      <span class="brand-text">YumeVerse</span>
+    </a>
+    <nav class="nav">
+      <a href="index.html#tendencias">Tendencias</a>
+      <a href="index.html#temporada">Temporada</a>
+      <a href="index.html#top">Top</a>
+    </nav>
+  </header>
+
+  <main class="container anime-page">
+    <section id="animeHeader" class="anime-header glass">
+      <div class="anime-header-inner">
+        <img id="animePoster" class="anime-poster" alt="Poster" />
+        <div>
+          <h1 id="animeTitle">Cargando...</h1>
+          <div id="animeMeta" class="meta"></div>
+          <div id="animeGenres" class="genre-cloud"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="anime-layout">
+      <article class="anime-main">
+        <section class="glass player-card">
+          <div class="player-top">
+            <h2 id="playerTitle">Episodio 1</h2>
+            <select id="languageSelect">
+              <option>Sub Espanol</option>
+              <option>Latino</option>
+              <option>Japones</option>
+            </select>
+          </div>
+          <div id="serverTabs" class="server-tabs"></div>
+          <div id="playerArea" class="player-area"></div>
+          <p id="playerNote" class="player-note"></p>
+        </section>
+
+        <section class="glass synopsis-card">
+          <h3>Sinopsis</h3>
+          <p id="animeDescription" class="modal-desc">Cargando...</p>
+          <p><a id="anilistLink" class="btn btn-primary" target="_blank" rel="noopener noreferrer" href="#">Ver en AniList</a></p>
+        </section>
+
+        <section class="glass comments-card">
+          <h3>Comentarios</h3>
+          <form id="commentForm" class="comment-form">
+            <input id="commentName" type="text" placeholder="Tu nombre" maxlength="40" />
+            <textarea id="commentText" placeholder="Escribe un comentario..." maxlength="400"></textarea>
+            <button class="btn btn-primary" type="submit">Publicar</button>
+          </form>
+          <div id="commentList" class="comment-list"></div>
+        </section>
+      </article>
+
+      <aside class="glass episodes-panel">
+        <div class="episodes-head">
+          <h3>Episodios</h3>
+          <input id="episodeSearch" type="search" placeholder="Filtrar episodio..." />
+        </div>
+        <div id="episodeList" class="episode-list"></div>
+      </aside>
+    </section>
+  </main>
+
+  <script src="anime.js"></script>
+</body>
+</html>

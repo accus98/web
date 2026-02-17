@@ -545,6 +545,228 @@ a {
   line-height: 1.52;
 }
 
+.anime-page {
+  display: grid;
+  gap: 16px;
+}
+
+.anime-header {
+  border-radius: 16px;
+  border: 1px solid var(--stroke);
+  overflow: hidden;
+  min-height: 220px;
+}
+
+.anime-header-inner {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 14px;
+  align-items: start;
+  padding: 16px;
+}
+
+.anime-header h1 {
+  margin: 0 0 8px;
+  font-family: "Bebas Neue", sans-serif;
+  letter-spacing: 0.7px;
+  font-size: clamp(2rem, 5vw, 3rem);
+}
+
+.anime-poster {
+  width: 140px;
+  height: 190px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--stroke);
+}
+
+.anime-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: 14px;
+}
+
+.anime-main {
+  display: grid;
+  gap: 14px;
+}
+
+.player-card,
+.synopsis-card,
+.comments-card,
+.episodes-panel {
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.player-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.player-top h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.player-top select,
+.episodes-head input,
+.comment-form input,
+.comment-form textarea {
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  background: rgba(4, 8, 15, 0.8);
+  color: var(--text-0);
+  padding: 9px 10px;
+  font: inherit;
+}
+
+.server-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.server-btn {
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  padding: 9px 10px;
+  color: #dbe8ff;
+  background: rgba(255, 255, 255, 0.04);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.server-btn.active {
+  border-color: rgba(255, 123, 28, 0.74);
+  background: rgba(255, 123, 28, 0.18);
+}
+
+.player-area {
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #02050a;
+  aspect-ratio: 16 / 9;
+}
+
+.player-area iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.player-fallback {
+  width: 100%;
+  height: 100%;
+  background-size: cover;
+  background-position: center;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  text-align: center;
+}
+
+.player-fallback > div {
+  background: rgba(0, 0, 0, 0.58);
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.player-note {
+  margin: 8px 2px 0;
+  color: var(--text-1);
+  font-size: 0.9rem;
+}
+
+.synopsis-card h3,
+.comments-card h3,
+.episodes-panel h3 {
+  margin: 0 0 10px;
+}
+
+.episodes-panel {
+  position: sticky;
+  top: 90px;
+  max-height: calc(100vh - 110px);
+  overflow: auto;
+}
+
+.episodes-head {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.episode-list {
+  display: grid;
+  gap: 8px;
+}
+
+.episode-item {
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: #dce9ff;
+  text-align: left;
+  padding: 10px;
+  cursor: pointer;
+}
+
+.episode-item span {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-1);
+  font-size: 0.86rem;
+}
+
+.episode-item.active {
+  border-color: rgba(7, 215, 167, 0.76);
+  background: rgba(7, 215, 167, 0.15);
+}
+
+.comment-form {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.comment-form textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.comment-list {
+  display: grid;
+  gap: 8px;
+}
+
+.comment-item {
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px;
+}
+
+.comment-item header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  color: var(--text-1);
+  font-size: 0.85rem;
+}
+
+.comment-item p {
+  margin: 0;
+  line-height: 1.5;
+}
+
 .skeleton {
   min-height: 240px;
   border-radius: 14px;
@@ -575,6 +797,19 @@ a {
 }
 
 @media (max-width: 980px) {
+  .anime-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .episodes-panel {
+    position: static;
+    max-height: unset;
+  }
+
+  .server-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .global-filter {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -593,6 +828,24 @@ a {
 }
 
 @media (max-width: 760px) {
+  .anime-header-inner {
+    grid-template-columns: 1fr;
+  }
+
+  .anime-poster {
+    width: 120px;
+    height: 165px;
+  }
+
+  .player-top {
+    flex-direction: column;
+    align-items: start;
+  }
+
+  .server-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .nav {
     display: none;
     position: absolute;

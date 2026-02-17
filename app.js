@@ -237,6 +237,21 @@ function passGlobalFilter(anime) {
   return true;
 }
 
+function maxScoreOf(list) {
+  return list.reduce((max, anime) => Math.max(max, Number(anime.averageScore || 0)), 0);
+}
+
+function noResultsText(sectionName, sourceList) {
+  const score = Number(state.globalFilter.score || 0);
+  if (score > 0) {
+    const max = maxScoreOf(sourceList);
+    if (max > 0) {
+      return `No hay resultados en ${sectionName} para score ${score}. Max actual: ${max}.`;
+    }
+  }
+  return "No hay resultados para este filtro.";
+}
+
 function filterTrending(list, filter) {
   if (filter === "airing") return list.filter((a) => a.status === "RELEASING");
   if (filter === "score80") return list.filter((a) => Number(a.averageScore || 0) >= 80);
@@ -249,7 +264,7 @@ function renderTrending() {
   const filtered = filterTrending(state.trending, state.trendingFilter).filter(passGlobalFilter);
   el.trendingGrid.innerHTML = filtered.length
     ? filtered.map(cardTemplate).join("")
-    : "<p>No hay resultados para este filtro.</p>";
+    : `<p>${noResultsText("tendencias", state.trending)}</p>`;
   lazyLoadImages();
   initReveal();
 }
@@ -258,14 +273,14 @@ function renderSeason() {
   const filtered = state.season.filter(passGlobalFilter);
   el.seasonGrid.innerHTML = filtered.length
     ? filtered.map(seasonTemplate).join("")
-    : "<p>No hay resultados para el filtro general.</p>";
+    : `<p>${noResultsText("temporada", state.season)}</p>`;
 }
 
 function renderTop() {
   const filtered = state.top.filter(passGlobalFilter);
   el.topGrid.innerHTML = filtered.length
     ? filtered.map(topTemplate).join("")
-    : "<p>No hay resultados para el filtro general.</p>";
+    : `<p>${noResultsText("top", state.top)}</p>`;
 }
 
 function renderAllSections() {
@@ -436,50 +451,9 @@ function setupBackgroundCycle(animes) {
   }, 5400);
 }
 
-async function openModal(id) {
-  el.modal.classList.add("open");
-  el.modal.setAttribute("aria-hidden", "false");
-  document.body.style.overflow = "hidden";
-  el.modalBody.innerHTML = "<p>Cargando detalle...</p>";
-  el.modalBanner.style.backgroundImage = "none";
-
-  try {
-    const data = await requestAniList(detailQuery, { id: Number(id) });
-    const anime = data.Media;
-    if (!anime) {
-      el.modalBody.innerHTML = "<p>No se encontro informacion.</p>";
-      return;
-    }
-
-    const banner = anime.bannerImage || bestCover(anime.coverImage);
-    el.modalBanner.style.backgroundImage = banner ? `url('${cssUrl(banner)}')` : "none";
-
-    const title = esc(pickTitle(anime.title));
-    const desc = esc(cleanDescription(anime.description));
-    const genres = (anime.genres || []).map((g) => `<span class="genre-pill">${esc(toGenre(g))}</span>`).join("");
-
-    el.modalBody.innerHTML = `
-      <h3>${title}</h3>
-      <div class="meta">
-        <span>${anime.averageScore ? `Score ${anime.averageScore}` : "Sin score"}</span>
-        <span>${anime.episodes ? `${anime.episodes} episodios` : "Por confirmar"}</span>
-        <span>${anime.duration ? `${anime.duration} min/ep` : "-"}</span>
-        <span>${toSeason(anime.season)} ${anime.seasonYear || ""}</span>
-        <span>${toStatus(anime.status)}</span>
-      </div>
-      <p class="modal-desc">${desc}</p>
-      <div class="genre-cloud">${genres}</div>
-      <p><a class="btn btn-primary" target="_blank" rel="noopener noreferrer" href="${esc(anime.siteUrl || "#")}">Ver en AniList</a></p>
-    `;
-  } catch (error) {
-    el.modalBody.innerHTML = `<p>No se pudo cargar el detalle. ${esc(error.message || "")}</p>`;
-  }
-}
-
-function closeModal() {
-  el.modal.classList.remove("open");
-  el.modal.setAttribute("aria-hidden", "true");
-  document.body.style.overflow = "";
+function openAnimeTab(id) {
+  const url = `anime.html?id=${encodeURIComponent(id)}`;
+  window.open(url, "_blank", "noopener");
 }
 
 let searchTimer = null;
@@ -560,16 +534,8 @@ function bindEvents() {
     const clickable = e.target.closest("[data-id]");
     if (!clickable) return;
     if (e.target.closest(".card") || e.target.closest(".rank") || e.target.closest(".search-item")) {
-      openModal(clickable.dataset.id);
+      openAnimeTab(clickable.dataset.id);
     }
-  });
-
-  el.modalClose.addEventListener("click", closeModal);
-  el.modal.addEventListener("click", (e) => {
-    if (e.target === el.modal) closeModal();
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && el.modal.classList.contains("open")) closeModal();
   });
 }
 
