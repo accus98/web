@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>YumeVerse | Anime</title>
+  <meta name="description" content="Explora anime con un diseno oscuro, animado y responsive usando datos de AniList." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg" aria-hidden="true">
+    <div class="bg-layer bg-1"></div>
+    <div class="bg-layer bg-2"></div>
+    <div class="bg-noise"></div>
+  </div>
+
+  <header class="header glass">
+    <a class="brand" href="#inicio">
+      <span class="brand-mark">YV</span>
+      <span class="brand-text">YumeVerse</span>
+    </a>
+    <nav class="nav" id="nav">
+      <a href="#tendencias">Tendencias</a>
+      <a href="#temporada">Temporada</a>
+      <a href="#top">Top</a>
+      <a href="#generos">Generos</a>
+    </nav>
+    <button class="menu-btn" id="menuBtn" aria-label="Abrir menu">☰</button>
+  </header>
+
+  <main class="container">
+    <section class="hero reveal" id="inicio">
+      <div class="hero-overlay"></div>
+      <div class="hero-content">
+        <p class="eyebrow">Anime hub • Diseno premium</p>
+        <h1>Tu portal anime <span>en serio</span></h1>
+        <p>Descubre tendencias, temporada actual y top puntuados con datos reales de AniList.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#tendencias">Ver tendencias</a>
+          <a class="btn btn-ghost" href="#top">Ver top</a>
+        </div>
+        <div class="search">
+          <input id="searchInput" type="search" placeholder="Buscar anime (ej: Naruto, Bleach...)" autocomplete="off" />
+          <button id="searchBtn" class="btn btn-primary" type="button">Buscar</button>
+        </div>
+        <div id="searchResults" class="search-results"></div>
+        <div id="stats" class="stats"></div>
+      </div>
+    </section>
+
+    <section class="section reveal" id="filtro-general">
+      <div class="section-head">
+        <h2>Filtro general</h2>
+        <p>Aplica a tendencias, temporada y top.</p>
+      </div>
+      <div class="global-filter glass">
+        <select id="globalGenre">
+          <option value="">Genero</option>
+        </select>
+        <select id="globalStatus">
+          <option value="">Estado</option>
+          <option value="RELEASING">En emision</option>
+          <option value="FINISHED">Finalizado</option>
+          <option value="NOT_YET_RELEASED">Proximamente</option>
+        </select>
+        <input id="globalScore" type="number" min="0" max="100" placeholder="Score minimo" />
+        <button id="globalApply" class="btn btn-primary" type="button">Aplicar</button>
+        <button id="globalClear" class="btn btn-ghost" type="button">Limpiar</button>
+      </div>
+    </section>
+
+    <section class="section reveal" id="tendencias">
+      <div class="section-head">
+        <h2>Tendencias globales</h2>
+        <p>Lo mas popular ahora.</p>
+      </div>
+      <div class="quick-filters" id="quickFilters">
+        <button class="filter-btn active" data-filter="all" type="button">Todos</button>
+        <button class="filter-btn" data-filter="airing" type="button">En emision</button>
+        <button class="filter-btn" data-filter="score80" type="button">Score 80+</button>
+        <button class="filter-btn" data-filter="action" type="button">Accion</button>
+        <button class="filter-btn" data-filter="romance" type="button">Romance</button>
+      </div>
+      <div id="trendingGrid" class="grid cards"></div>
+    </section>
+
+    <section class="section reveal" id="temporada">
+      <div class="section-head">
+        <h2>Temporada actual</h2>
+        <p>Nuevos lanzamientos y secuelas.</p>
+      </div>
+      <div id="seasonGrid" class="grid wide"></div>
+    </section>
+
+    <section class="section reveal" id="top">
+      <div class="section-head">
+        <h2>Top mejor valorados</h2>
+        <p>Series con mayor score.</p>
+      </div>
+      <div id="topGrid" class="grid list"></div>
+    </section>
+
+    <section class="section reveal" id="generos">
+      <div class="section-head">
+        <h2>Generos para explorar</h2>
+        <p>Busca por mood.</p>
+      </div>
+      <div id="genreCloud" class="genre-cloud"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>Datos: AniList GraphQL API.</p>
+  </footer>
+
+  <aside id="modal" class="modal" aria-hidden="true">
+    <div class="modal-dialog">
+      <button id="modalClose" class="modal-close" aria-label="Cerrar">×</button>
+      <div id="modalBanner" class="modal-banner"></div>
+      <div id="modalBody" class="modal-body"></div>
+    </div>
+  </aside>
+
+  <script src="app.js"></script>
+</body>
+</html>
