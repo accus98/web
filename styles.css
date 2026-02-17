@@ -716,9 +716,25 @@ a {
   text-align: left;
   padding: 10px;
   cursor: pointer;
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 10px;
+  align-items: center;
 }
 
-.episode-item span {
+.episode-thumb {
+  width: 72px;
+  height: 42px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--stroke);
+}
+
+.episode-info {
+  display: block;
+}
+
+.episode-info > span {
   display: block;
   margin-top: 4px;
   color: var(--text-1);

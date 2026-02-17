@@ -27,12 +27,16 @@ const el = {
 };
 
 const state = {
+  rawTrending: [],
+  rawSeason: [],
+  rawTop: [],
   trending: [],
   season: [],
   top: [],
   genres: [],
   globalFilter: { genre: "", status: "", score: "" },
-  trendingFilter: "all"
+  trendingFilter: "all",
+  filterRequestId: 0
 };
 
 const STATUS_MAP = {
@@ -113,6 +117,75 @@ query HomePageData($season: MediaSeason, $seasonYear: Int) {
     }
   }
   genres: GenreCollection
+}
+`;
+
+const filteredQuery = `
+query FilteredHome(
+  $genre: String
+  $status: MediaStatus
+  $score: Int
+  $season: MediaSeason
+  $seasonYear: Int
+) {
+  trending: Page(page: 1, perPage: 24) {
+    media(
+      type: ANIME
+      sort: TRENDING_DESC
+      genre: $genre
+      status: $status
+      averageScore_greater: $score
+    ) {
+      id
+      title { romaji english native }
+      episodes
+      averageScore
+      seasonYear
+      status
+      genres
+      coverImage { extraLarge large medium }
+      bannerImage
+    }
+  }
+  season: Page(page: 1, perPage: 24) {
+    media(
+      type: ANIME
+      sort: POPULARITY_DESC
+      season: $season
+      seasonYear: $seasonYear
+      genre: $genre
+      status: $status
+      averageScore_greater: $score
+    ) {
+      id
+      title { romaji english native }
+      averageScore
+      season
+      seasonYear
+      status
+      genres
+      coverImage { extraLarge large medium }
+      bannerImage
+    }
+  }
+  top: Page(page: 1, perPage: 24) {
+    media(
+      type: ANIME
+      sort: SCORE_DESC
+      genre: $genre
+      status: $status
+      averageScore_greater: $score
+    ) {
+      id
+      title { romaji english native }
+      averageScore
+      episodes
+      seasonYear
+      status
+      genres
+      coverImage { extraLarge large medium }
+    }
+  }
 }
 `;
 
@@ -235,6 +308,69 @@ function passGlobalFilter(anime) {
   if (f.status && anime.status !== f.status) return false;
   if (f.score && Number(anime.averageScore || 0) < Number(f.score)) return false;
   return true;
+}
+
+function hasGlobalFilterActive() {
+  const f = state.globalFilter;
+  return Boolean(f.genre || f.status || f.score);
+}
+
+async function fetchFilteredData() {
+  const reqId = ++state.filterRequestId;
+  const seasonInfo = nowSeason();
+  const escapeGraphQLString = (value) => String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  const args = [];
+  if (state.globalFilter.genre) args.push(`genre: "${escapeGraphQLString(state.globalFilter.genre)}"`);
+  if (state.globalFilter.status) args.push(`status: ${state.globalFilter.status}`);
+  if (state.globalFilter.score) args.push(`averageScore_greater: ${Number(state.globalFilter.score)}`);
+  const optionalArgs = args.length ? `, ${args.join(", ")}` : "";
+
+  const query = `
+  query FilteredHome {
+    trending: Page(page: 1, perPage: 24) {
+      media(type: ANIME, sort: TRENDING_DESC${optionalArgs}) {
+        id
+        title { romaji english native }
+        episodes
+        averageScore
+        seasonYear
+        status
+        genres
+        coverImage { extraLarge large medium }
+        bannerImage
+      }
+    }
+    season: Page(page: 1, perPage: 24) {
+      media(type: ANIME, sort: POPULARITY_DESC, season: ${seasonInfo.season}, seasonYear: ${seasonInfo.seasonYear}${optionalArgs}) {
+        id
+        title { romaji english native }
+        averageScore
+        season
+        seasonYear
+        status
+        genres
+        coverImage { extraLarge large medium }
+        bannerImage
+      }
+    }
+    top: Page(page: 1, perPage: 24) {
+      media(type: ANIME, sort: SCORE_DESC${optionalArgs}) {
+        id
+        title { romaji english native }
+        averageScore
+        episodes
+        seasonYear
+        status
+        genres
+        coverImage { extraLarge large medium }
+      }
+    }
+  }
+  `;
+
+  const data = await requestAniList(query);
+  if (reqId !== state.filterRequestId) return null;
+  return data;
 }
 
 function maxScoreOf(list) {
@@ -478,13 +614,37 @@ async function runSearch() {
 }
 
 function bindEvents() {
-  const applyGlobalFilterFromInputs = () => {
+  const applyGlobalFilterFromInputs = async () => {
     state.globalFilter = {
       genre: el.globalGenre.value,
       status: el.globalStatus.value,
       score: el.globalScore.value.trim()
     };
-    renderAllSections();
+
+    if (!hasGlobalFilterActive()) {
+      state.trending = state.rawTrending.slice();
+      state.season = state.rawSeason.slice();
+      state.top = state.rawTop.slice();
+      renderAllSections();
+      return;
+    }
+
+    setSkeleton(el.trendingGrid, 8);
+    setSkeleton(el.seasonGrid, 6);
+    setSkeleton(el.topGrid, 6);
+
+    try {
+      const data = await fetchFilteredData();
+      if (!data) return;
+      state.trending = data.trending?.media || [];
+      state.season = data.season?.media || [];
+      state.top = data.top?.media || [];
+      renderAllSections();
+    } catch {
+      el.trendingGrid.innerHTML = "<p>No se pudieron cargar resultados para ese filtro.</p>";
+      el.seasonGrid.innerHTML = "<p>No se pudieron cargar resultados para ese filtro.</p>";
+      el.topGrid.innerHTML = "<p>No se pudieron cargar resultados para ese filtro.</p>";
+    }
   };
 
   el.menuBtn.addEventListener("click", () => el.nav.classList.toggle("show"));
@@ -514,9 +674,13 @@ function bindEvents() {
 
   el.globalClear.addEventListener("click", () => {
     state.globalFilter = { genre: "", status: "", score: "" };
+    state.filterRequestId += 1;
     el.globalGenre.value = "";
     el.globalStatus.value = "";
     el.globalScore.value = "";
+    state.trending = state.rawTrending.slice();
+    state.season = state.rawSeason.slice();
+    state.top = state.rawTop.slice();
     renderAllSections();
   });
 
@@ -551,9 +715,12 @@ async function loadHome() {
     const top = data.top?.media || [];
     const genres = data.genres || [];
 
-    state.trending = trending;
-    state.season = season;
-    state.top = top;
+    state.rawTrending = trending.slice();
+    state.rawSeason = season.slice();
+    state.rawTop = top.slice();
+    state.trending = trending.slice();
+    state.season = season.slice();
+    state.top = top.slice();
     state.genres = genres;
     hydrateGlobalGenres();
     renderAllSections();
