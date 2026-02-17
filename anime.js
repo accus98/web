@@ -18,8 +18,8 @@ const SEASON_MAP = {
 const SERVERS = ["Desu", "Magi", "Mega", "Streamwish", "VOE", "Filemoon", "Mixdrop", "Mp4upload"];
 
 const detailQuery = `
-query Detail($id: Int) {
-  Media(id: $id, type: ANIME) {
+query Detail($id: Int, $idMal: Int) {
+  Media(id: $id, idMal: $idMal, type: ANIME) {
     id
     title { romaji english native }
     description(asHtml: false)
@@ -414,15 +414,18 @@ function bindEvents() {
 }
 
 async function main() {
-  const id = Number(new URLSearchParams(window.location.search).get("id") || 0);
-  if (!id) {
+  const params = new URLSearchParams(window.location.search);
+  const id = Number(params.get("id") || 0);
+  const idMal = Number(params.get("idMal") || 0);
+
+  if (!id && !idMal) {
     el.animeTitle.textContent = "ID invalido";
-    el.animeDescription.textContent = "No se recibio un id de anime.";
+    el.animeDescription.textContent = "No se recibio un id valido de anime.";
     return;
   }
 
   try {
-    const data = await requestAniList(detailQuery, { id });
+    const data = await requestAniList(detailQuery, { id: id || null, idMal: idMal || null });
     const anime = data.Media;
     if (!anime) {
       el.animeTitle.textContent = "No encontrado";
