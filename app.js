@@ -1,5 +1,4 @@
-const API_URL = "https://graphql.anilist.co";
-const JIKAN_API_URL = "https://api.jikan.moe/v4";
+﻿const API_URL = "https://graphql.anilist.co";
 
 const el = {
   nav: document.getElementById("nav"),
@@ -10,7 +9,6 @@ const el = {
   stats: document.getElementById("stats"),
   trendingGrid: document.getElementById("trendingGrid"),
   quickFilters: document.getElementById("quickFilters"),
-  globalSource: document.getElementById("globalSource"),
   globalGenre: document.getElementById("globalGenre"),
   globalStatus: document.getElementById("globalStatus"),
   globalScore: document.getElementById("globalScore"),
@@ -32,14 +30,11 @@ const state = {
   rawTrending: [],
   rawSeason: [],
   rawTop: [],
-  rawMalTrending: [],
-  rawMalSeason: [],
-  rawMalTop: [],
   trending: [],
   season: [],
   top: [],
   genres: [],
-  globalFilter: { source: "ANILIST", genre: "", status: "", score: "" },
+  globalFilter: { genre: "", status: "", score: "" },
   trendingFilter: "all",
   filterRequestId: 0
 };
@@ -81,44 +76,11 @@ const GENRE_MAP = {
   Thriller: "Suspenso"
 };
 
-const SOURCE_MAP = {
-  ANILIST: "AniList",
-  MYANIMELIST: "MyAnimeList"
-};
-
-const MAL_GENRE_IDS = {
-  Action: 1,
-  Adventure: 2,
-  Comedy: 4,
-  Drama: 8,
-  Ecchi: 9,
-  Fantasy: 10,
-  Hentai: 12,
-  Horror: 14,
-  Mecha: 18,
-  Music: 19,
-  Mystery: 7,
-  Psychological: 40,
-  Romance: 22,
-  "Sci-Fi": 24,
-  "Slice of Life": 36,
-  Sports: 30,
-  Supernatural: 37,
-  Thriller: 41
-};
-
-const ANILIST_TO_MAL_STATUS = {
-  RELEASING: "airing",
-  FINISHED: "complete",
-  NOT_YET_RELEASED: "upcoming"
-};
-
 const homeQuery = `
 query HomePageData($season: MediaSeason, $seasonYear: Int) {
   trending: Page(page: 1, perPage: 12) {
     media(type: ANIME, sort: TRENDING_DESC) {
       id
-      idMal
       title { romaji english native }
       episodes
       averageScore
@@ -132,7 +94,6 @@ query HomePageData($season: MediaSeason, $seasonYear: Int) {
   season: Page(page: 1, perPage: 6) {
     media(type: ANIME, sort: POPULARITY_DESC, season: $season, seasonYear: $seasonYear) {
       id
-      idMal
       title { romaji english native }
       averageScore
       season
@@ -146,7 +107,6 @@ query HomePageData($season: MediaSeason, $seasonYear: Int) {
   top: Page(page: 1, perPage: 10) {
     media(type: ANIME, sort: SCORE_DESC) {
       id
-      idMal
       title { romaji english native }
       averageScore
       episodes
@@ -234,7 +194,6 @@ query SearchAnime($search: String) {
   Page(page: 1, perPage: 6) {
     media(type: ANIME, sort: POPULARITY_DESC, search: $search) {
       id
-      idMal
       title { romaji english native }
       averageScore
       seasonYear
@@ -291,32 +250,6 @@ async function requestAniList(query, variables = {}) {
   return json.data;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function requestJikan(endpoint, params = {}, retries = 2) {
-  const url = new URL(`${JIKAN_API_URL}${endpoint}`);
-  Object.entries(params).forEach(([key, value]) => {
-    if (value === "" || value === null || value === undefined) return;
-    url.searchParams.set(key, String(value));
-  });
-
-  const response = await fetch(url.toString(), {
-    headers: {
-      Accept: "application/json"
-    }
-  });
-
-  if (response.status === 429 && retries > 0) {
-    await sleep(850);
-    return requestJikan(endpoint, params, retries - 1);
-  }
-  if (!response.ok) throw new Error(`Jikan ${response.status}`);
-  const json = await response.json();
-  return json?.data || [];
-}
-
 function esc(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -358,76 +291,6 @@ function toGenre(value) {
   return GENRE_MAP[value] || value;
 }
 
-function sourceLabel(value) {
-  return SOURCE_MAP[value] || "AniList";
-}
-
-function toNumber(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function malStatusFromAniList(value) {
-  return ANILIST_TO_MAL_STATUS[value] || "";
-}
-
-function aniStatusFromMal(value) {
-  const status = String(value || "").toLowerCase();
-  if (status.includes("airing")) return "RELEASING";
-  if (status.includes("finished")) return "FINISHED";
-  if (status.includes("not yet")) return "NOT_YET_RELEASED";
-  return "";
-}
-
-function aniSeasonFromMal(value) {
-  const season = String(value || "").toLowerCase();
-  if (season === "winter") return "WINTER";
-  if (season === "spring") return "SPRING";
-  if (season === "summer") return "SUMMER";
-  if (season === "fall") return "FALL";
-  return "";
-}
-
-function normalizeMyAnimeListMedia(item) {
-  const cover =
-    item?.images?.webp?.large_image_url ||
-    item?.images?.jpg?.large_image_url ||
-    item?.images?.webp?.image_url ||
-    item?.images?.jpg?.image_url ||
-    "";
-  const banner =
-    item?.trailer?.images?.maximum_image_url ||
-    item?.trailer?.images?.large_image_url ||
-    item?.images?.jpg?.large_image_url ||
-    cover;
-  const score10 = Number(item?.score);
-  const score100 = Number.isFinite(score10) ? Math.round(score10 * 10) : null;
-  const year = item?.year || item?.aired?.prop?.from?.year || null;
-
-  return {
-    id: null,
-    idMal: item?.mal_id || null,
-    source: "MYANIMELIST",
-    title: {
-      english: item?.title_english || "",
-      romaji: item?.title || "",
-      native: item?.title_japanese || ""
-    },
-    episodes: item?.episodes || null,
-    averageScore: score100,
-    season: aniSeasonFromMal(item?.season),
-    seasonYear: year,
-    status: aniStatusFromMal(item?.status),
-    genres: (item?.genres || []).map((g) => g?.name).filter(Boolean),
-    coverImage: {
-      extraLarge: cover,
-      large: cover,
-      medium: cover
-    },
-    bannerImage: banner
-  };
-}
-
 function cleanDescription(text) {
   return String(text || "Sin sinopsis disponible.")
     .replace(/<[^>]+>/g, " ")
@@ -449,17 +312,17 @@ function passGlobalFilter(anime) {
 
 function hasGlobalFilterActive() {
   const f = state.globalFilter;
-  return Boolean(f.source !== "ANILIST" || f.genre || f.status || f.score);
+  return Boolean(f.genre || f.status || f.score);
 }
 
-async function fetchAniListFilteredData() {
+async function fetchFilteredData() {
   const reqId = ++state.filterRequestId;
   const seasonInfo = nowSeason();
   const escapeGraphQLString = (value) => String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
   const args = [];
   if (state.globalFilter.genre) args.push(`genre: "${escapeGraphQLString(state.globalFilter.genre)}"`);
   if (state.globalFilter.status) args.push(`status: ${state.globalFilter.status}`);
-  if (state.globalFilter.score) args.push(`averageScore_greater: ${toNumber(state.globalFilter.score)}`);
+  if (state.globalFilter.score) args.push(`averageScore_greater: ${Number(state.globalFilter.score)}`);
   const optionalArgs = args.length ? `, ${args.join(", ")}` : "";
 
   const query = `
@@ -467,7 +330,6 @@ async function fetchAniListFilteredData() {
     trending: Page(page: 1, perPage: 24) {
       media(type: ANIME, sort: TRENDING_DESC${optionalArgs}) {
         id
-        idMal
         title { romaji english native }
         episodes
         averageScore
@@ -481,7 +343,6 @@ async function fetchAniListFilteredData() {
     season: Page(page: 1, perPage: 24) {
       media(type: ANIME, sort: POPULARITY_DESC, season: ${seasonInfo.season}, seasonYear: ${seasonInfo.seasonYear}${optionalArgs}) {
         id
-        idMal
         title { romaji english native }
         averageScore
         season
@@ -495,7 +356,6 @@ async function fetchAniListFilteredData() {
     top: Page(page: 1, perPage: 24) {
       media(type: ANIME, sort: SCORE_DESC${optionalArgs}) {
         id
-        idMal
         title { romaji english native }
         averageScore
         episodes
@@ -510,57 +370,7 @@ async function fetchAniListFilteredData() {
 
   const data = await requestAniList(query);
   if (reqId !== state.filterRequestId) return null;
-  return {
-    trending: data.trending?.media || [],
-    season: data.season?.media || [],
-    top: data.top?.media || []
-  };
-}
-
-async function fetchMyAnimeListFilteredData() {
-  const reqId = ++state.filterRequestId;
-  const scoreMin = toNumber(state.globalFilter.score);
-  const malStatus = malStatusFromAniList(state.globalFilter.status);
-  const genreId = MAL_GENRE_IDS[state.globalFilter.genre] || "";
-  const commonParams = {
-    sfw: true,
-    limit: 24,
-    page: 1
-  };
-
-  if (genreId) commonParams.genres = genreId;
-  if (malStatus) commonParams.status = malStatus;
-  if (scoreMin > 0) commonParams.min_score = Math.min(10, Math.max(0, scoreMin / 10)).toFixed(1);
-
-  const trendingParams = {
-    ...commonParams,
-    order_by: "members",
-    sort: "desc"
-  };
-  const seasonParams = {
-    ...commonParams,
-    order_by: "popularity",
-    sort: "asc",
-    status: malStatus || "airing"
-  };
-  const topParams = {
-    ...commonParams,
-    order_by: "score",
-    sort: "desc"
-  };
-
-  const [trendingRaw, seasonRaw, topRaw] = await Promise.all([
-    requestJikan("/anime", trendingParams),
-    requestJikan("/anime", seasonParams),
-    requestJikan("/anime", topParams)
-  ]);
-
-  if (reqId !== state.filterRequestId) return null;
-
-  const trending = trendingRaw.map(normalizeMyAnimeListMedia);
-  const season = seasonRaw.map(normalizeMyAnimeListMedia);
-  const top = topRaw.map(normalizeMyAnimeListMedia);
-  return { trending, season, top };
+  return data;
 }
 
 function maxScoreOf(list) {
@@ -625,19 +435,12 @@ function hydrateGlobalGenres() {
   if (value) el.globalGenre.value = value;
 }
 
-function mediaDataAttrs(anime) {
-  const source = anime.source || "ANILIST";
-  const anilistId = anime.id ? String(anime.id) : "";
-  const malId = anime.idMal ? String(anime.idMal) : "";
-  return `data-source="${esc(source)}" data-anilist-id="${esc(anilistId)}" data-mal-id="${esc(malId)}"`;
-}
-
 function cardTemplate(anime) {
   const title = esc(pickTitle(anime.title));
   const image = bestCover(anime.coverImage);
   const srcset = coverSrcSet(anime.coverImage);
   return `
-  <article class="card reveal" ${mediaDataAttrs(anime)}>
+  <article class="card reveal" data-id="${anime.id}">
     <img data-src="${esc(image)}" data-srcset="${srcset}" data-sizes="(max-width: 760px) 50vw, (max-width: 1200px) 25vw, 280px" alt="${title}" loading="lazy" />
     <div class="card-body">
       <h3>${title}</h3>
@@ -645,7 +448,6 @@ function cardTemplate(anime) {
         <span>${anime.averageScore ? `Score ${anime.averageScore}` : "Sin score"}</span>
         <span>${anime.episodes ? `${anime.episodes} eps` : "Por confirmar"}</span>
         <span>${toStatus(anime.status)}</span>
-        <span>${sourceLabel(anime.source || "ANILIST")}</span>
       </div>
     </div>
   </article>`;
@@ -656,14 +458,13 @@ function seasonTemplate(anime) {
   const image = anime.bannerImage || bestCover(anime.coverImage);
   const srcset = coverSrcSet(anime.coverImage);
   return `
-  <article class="card reveal" ${mediaDataAttrs(anime)}>
+  <article class="card reveal" data-id="${anime.id}">
     <img data-src="${esc(image)}" data-srcset="${srcset}" data-sizes="(max-width: 980px) 100vw, 33vw" alt="${title}" loading="lazy" />
     <div class="card-body">
       <h3>${title}</h3>
       <div class="meta">
         <span>${toSeason(anime.season)} ${anime.seasonYear || ""}</span>
         <span>${anime.averageScore ? `Score ${anime.averageScore}` : "Nuevo"}</span>
-        <span>${sourceLabel(anime.source || "ANILIST")}</span>
       </div>
     </div>
   </article>`;
@@ -674,7 +475,7 @@ function topTemplate(anime, idx) {
   const image = bestCover(anime.coverImage);
   const srcset = coverSrcSet(anime.coverImage);
   return `
-  <article class="rank reveal" ${mediaDataAttrs(anime)}>
+  <article class="rank reveal" data-id="${anime.id}">
     <div class="rank-num">${idx + 1}</div>
     <img data-src="${esc(image)}" data-srcset="${srcset}" data-sizes="66px" alt="${title}" loading="lazy" />
     <div>
@@ -683,7 +484,6 @@ function topTemplate(anime, idx) {
         <span>${anime.averageScore ? `Score ${anime.averageScore}` : "Sin score"}</span>
         <span>${anime.episodes ? `${anime.episodes} eps` : "Por confirmar"}</span>
         <span>${anime.seasonYear || "-"}</span>
-        <span>${sourceLabel(anime.source || "ANILIST")}</span>
       </div>
     </div>
   </article>`;
@@ -694,7 +494,7 @@ function searchItemTemplate(anime) {
   const image = bestCover(anime.coverImage);
   const srcset = coverSrcSet(anime.coverImage);
   return `
-  <article class="search-item" ${mediaDataAttrs(anime)}>
+  <article class="search-item" data-id="${anime.id}">
     <img data-src="${esc(image)}" data-srcset="${srcset}" data-sizes="58px" alt="${title}" loading="lazy" />
     <div>
       <h3>${title}</h3>
@@ -787,17 +587,8 @@ function setupBackgroundCycle(animes) {
   }, 5400);
 }
 
-function openAnimeTab({ source, anilistId, malId }) {
-  if (!anilistId && !malId) return;
-  const normalizedSource = source === "MYANIMELIST" ? "MYANIMELIST" : "ANILIST";
-  let url = "anime.html";
-  if (normalizedSource === "MYANIMELIST" && malId) {
-    url += `?idMal=${encodeURIComponent(malId)}&source=myanimelist`;
-  } else if (anilistId) {
-    url += `?id=${encodeURIComponent(anilistId)}`;
-  } else if (malId) {
-    url += `?idMal=${encodeURIComponent(malId)}&source=myanimelist`;
-  }
+function openAnimeTab(id) {
+  const url = `anime.html?id=${encodeURIComponent(id)}`;
   window.open(url, "_blank", "noopener");
 }
 
@@ -825,30 +616,16 @@ async function runSearch() {
 function bindEvents() {
   const applyGlobalFilterFromInputs = async () => {
     state.globalFilter = {
-      source: el.globalSource.value || "ANILIST",
       genre: el.globalGenre.value,
       status: el.globalStatus.value,
       score: el.globalScore.value.trim()
     };
 
-    const usingAniList = state.globalFilter.source === "ANILIST";
-    const hasOnlySourceFilter = !state.globalFilter.genre && !state.globalFilter.status && !state.globalFilter.score;
-
-    if (usingAniList && hasOnlySourceFilter) {
+    if (!hasGlobalFilterActive()) {
       state.trending = state.rawTrending.slice();
       state.season = state.rawSeason.slice();
       state.top = state.rawTop.slice();
       renderAllSections();
-      renderStats(state.trending);
-      return;
-    }
-
-    if (!usingAniList && hasOnlySourceFilter && state.rawMalTrending.length) {
-      state.trending = state.rawMalTrending.slice();
-      state.season = state.rawMalSeason.slice();
-      state.top = state.rawMalTop.slice();
-      renderAllSections();
-      renderStats(state.trending);
       return;
     }
 
@@ -857,20 +634,12 @@ function bindEvents() {
     setSkeleton(el.topGrid, 6);
 
     try {
-      const data = usingAniList
-        ? await fetchAniListFilteredData()
-        : await fetchMyAnimeListFilteredData();
+      const data = await fetchFilteredData();
       if (!data) return;
-      state.trending = data.trending || [];
-      state.season = data.season || [];
-      state.top = data.top || [];
-      if (!usingAniList && hasOnlySourceFilter) {
-        state.rawMalTrending = state.trending.slice();
-        state.rawMalSeason = state.season.slice();
-        state.rawMalTop = state.top.slice();
-      }
+      state.trending = data.trending?.media || [];
+      state.season = data.season?.media || [];
+      state.top = data.top?.media || [];
       renderAllSections();
-      renderStats(state.trending);
     } catch {
       el.trendingGrid.innerHTML = "<p>No se pudieron cargar resultados para ese filtro.</p>";
       el.seasonGrid.innerHTML = "<p>No se pudieron cargar resultados para ese filtro.</p>";
@@ -904,9 +673,8 @@ function bindEvents() {
   });
 
   el.globalClear.addEventListener("click", () => {
-    state.globalFilter = { source: "ANILIST", genre: "", status: "", score: "" };
+    state.globalFilter = { genre: "", status: "", score: "" };
     state.filterRequestId += 1;
-    el.globalSource.value = "ANILIST";
     el.globalGenre.value = "";
     el.globalStatus.value = "";
     el.globalScore.value = "";
@@ -914,10 +682,8 @@ function bindEvents() {
     state.season = state.rawSeason.slice();
     state.top = state.rawTop.slice();
     renderAllSections();
-    renderStats(state.trending);
   });
 
-  el.globalSource.addEventListener("change", applyGlobalFilterFromInputs);
   el.globalGenre.addEventListener("change", applyGlobalFilterFromInputs);
   el.globalStatus.addEventListener("change", applyGlobalFilterFromInputs);
   el.globalScore.addEventListener("input", () => {
@@ -929,14 +695,10 @@ function bindEvents() {
   });
 
   document.addEventListener("click", (e) => {
-    const clickable = e.target.closest("[data-source]");
+    const clickable = e.target.closest("[data-id]");
     if (!clickable) return;
     if (e.target.closest(".card") || e.target.closest(".rank") || e.target.closest(".search-item")) {
-      openAnimeTab({
-        source: clickable.dataset.source,
-        anilistId: clickable.dataset.anilistId,
-        malId: clickable.dataset.malId
-      });
+      openAnimeTab(clickable.dataset.id);
     }
   });
 }
