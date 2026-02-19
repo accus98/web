@@ -1,4 +1,6 @@
-﻿const API_URL = "https://graphql.anilist.co";
+const DIRECT_ANILIST_URL = "https://graphql.anilist.co";
+const PROXY_ANILIST_URL = "/api/anilist";
+const PROXY_IMAGE_QUALITY_URL = "/api/image-quality";
 
 const el = {
   nav: document.getElementById("nav"),
@@ -36,8 +38,14 @@ const state = {
   genres: [],
   globalFilter: { genre: "", status: "", score: "" },
   trendingFilter: "all",
-  filterRequestId: 0
+  filterRequestId: 0,
+  imageEnhanceRequestId: 0
 };
+
+const imageQualityCache = new Map();
+const imageMetaCache = new Map();
+let heroCycleTimer = null;
+let heroCycleToken = 0;
 
 const STATUS_MAP = {
   FINISHED: "Finalizado",
@@ -81,6 +89,7 @@ query HomePageData($season: MediaSeason, $seasonYear: Int) {
   trending: Page(page: 1, perPage: 12) {
     media(type: ANIME, sort: TRENDING_DESC) {
       id
+      idMal
       title { romaji english native }
       episodes
       averageScore
@@ -94,6 +103,7 @@ query HomePageData($season: MediaSeason, $seasonYear: Int) {
   season: Page(page: 1, perPage: 6) {
     media(type: ANIME, sort: POPULARITY_DESC, season: $season, seasonYear: $seasonYear) {
       id
+      idMal
       title { romaji english native }
       averageScore
       season
@@ -107,6 +117,7 @@ query HomePageData($season: MediaSeason, $seasonYear: Int) {
   top: Page(page: 1, perPage: 10) {
     media(type: ANIME, sort: SCORE_DESC) {
       id
+      idMal
       title { romaji english native }
       averageScore
       episodes
@@ -194,6 +205,7 @@ query SearchAnime($search: String) {
   Page(page: 1, perPage: 6) {
     media(type: ANIME, sort: POPULARITY_DESC, search: $search) {
       id
+      idMal
       title { romaji english native }
       averageScore
       seasonYear
@@ -236,18 +248,30 @@ function nowSeason() {
 }
 
 async function requestAniList(query, variables = {}) {
-  const r = await fetch(API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json"
-    },
-    body: JSON.stringify({ query, variables })
-  });
-  if (!r.ok) throw new Error(`AniList ${r.status}`);
-  const json = await r.json();
-  if (json.errors) throw new Error(json.errors[0]?.message || "GraphQL error");
-  return json.data;
+  const requestAniListFrom = async (url) => {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({ query, variables })
+    });
+    if (!r.ok) throw new Error(`AniList ${r.status}`);
+    const json = await r.json();
+    if (json.errors) throw new Error(json.errors[0]?.message || "GraphQL error");
+    return json.data;
+  };
+
+  if (window.location.protocol === "file:") {
+    return requestAniListFrom(DIRECT_ANILIST_URL);
+  }
+
+  try {
+    return await requestAniListFrom(PROXY_ANILIST_URL);
+  } catch {
+    return requestAniListFrom(DIRECT_ANILIST_URL);
+  }
 }
 
 function esc(value) {
@@ -263,6 +287,11 @@ function cssUrl(url) {
   return String(url || "").replace(/'/g, "%27");
 }
 
+function setHeroImage(url) {
+  if (!url) return;
+  el.hero.style.setProperty("--hero-bg", `url('${cssUrl(url)}')`);
+}
+
 function pickTitle(title) {
   return title?.english || title?.romaji || title?.native || "Anime";
 }
@@ -273,10 +302,203 @@ function bestCover(coverImage) {
 
 function coverSrcSet(coverImage) {
   const parts = [];
-  if (coverImage?.medium) parts.push(`${esc(coverImage.medium)} 240w`);
-  if (coverImage?.large) parts.push(`${esc(coverImage.large)} 460w`);
-  if (coverImage?.extraLarge) parts.push(`${esc(coverImage.extraLarge)} 680w`);
+  const seen = new Set();
+  const candidates = [
+    [coverImage?.medium, 240],
+    [coverImage?.large, 460],
+    [coverImage?.extraLarge, 680]
+  ];
+  candidates.forEach(([url, width]) => {
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    parts.push(`${esc(url)} ${width}w`);
+  });
   return parts.join(", ");
+}
+
+function uniqueUrls(list, max = 12) {
+  const out = [];
+  const seen = new Set();
+  (list || []).forEach((url) => {
+    const value = String(url || "").trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    out.push(value);
+  });
+  return out.slice(0, max);
+}
+
+function loadImageMeta(url) {
+  const key = String(url || "").trim();
+  if (!key) return Promise.resolve({ width: 0, height: 0 });
+  if (imageMetaCache.has(key)) return imageMetaCache.get(key);
+
+  const promise = new Promise((resolve) => {
+    const img = new Image();
+    let settled = false;
+    const finish = (meta) => {
+      if (settled) return;
+      settled = true;
+      resolve(meta);
+    };
+
+    const timeout = setTimeout(() => finish({ width: 0, height: 0 }), 4200);
+    img.onload = () => {
+      clearTimeout(timeout);
+      finish({ width: img.naturalWidth || 0, height: img.naturalHeight || 0 });
+    };
+    img.onerror = () => {
+      clearTimeout(timeout);
+      finish({ width: 0, height: 0 });
+    };
+    img.decoding = "async";
+    img.src = key;
+  });
+
+  imageMetaCache.set(key, promise);
+  return promise;
+}
+
+async function pickHeroImages(animes) {
+  const bannerCandidates = uniqueUrls((animes || []).map((a) => a.bannerImage), 16);
+  const coverCandidates = uniqueUrls((animes || []).map((a) => bestCover(a.coverImage)), 16);
+  const combined = uniqueUrls([...bannerCandidates, ...coverCandidates], 16);
+  if (!combined.length) return [];
+
+  const checked = await Promise.all(
+    combined.map(async (url) => ({
+      url,
+      ...(await loadImageMeta(url))
+    }))
+  );
+
+  const strong = checked
+    .filter((item) => item.width >= 1200 && item.height >= 450)
+    .map((item) => item.url);
+  if (strong.length) return strong.slice(0, 8);
+
+  const acceptable = checked
+    .filter((item) => item.width >= 900 && item.height >= 320)
+    .map((item) => item.url);
+  if (acceptable.length) return acceptable.slice(0, 8);
+
+  return combined.slice(0, 8);
+}
+
+function canUseProxyApis() {
+  return window.location.protocol !== "file:";
+}
+
+function collectUniqueMalIds(...lists) {
+  const out = [];
+  const seen = new Set();
+  lists
+    .flat()
+    .forEach((anime) => {
+      const idMal = Number(anime?.idMal || 0);
+      if (!idMal || seen.has(idMal)) return;
+      seen.add(idMal);
+      out.push(idMal);
+    });
+  return out;
+}
+
+function mergeBestImageIntoAnime(anime, best) {
+  if (!best || (!best.cover && !best.banner)) return anime;
+  const next = {
+    ...anime,
+    coverImage: {
+      extraLarge: anime?.coverImage?.extraLarge || "",
+      large: anime?.coverImage?.large || "",
+      medium: anime?.coverImage?.medium || ""
+    }
+  };
+
+  if (best.cover) {
+    next.coverImage.extraLarge = best.cover;
+    next.coverImage.large = best.cover;
+    if (!next.coverImage.medium) next.coverImage.medium = best.cover;
+  }
+  if (best.banner) {
+    next.bannerImage = best.banner;
+  }
+  return next;
+}
+
+function applyImageMapToList(list, imageMap) {
+  return (list || []).map((anime) => {
+    const idMal = Number(anime?.idMal || 0);
+    if (!idMal) return anime;
+    return mergeBestImageIntoAnime(anime, imageMap.get(idMal));
+  });
+}
+
+async function requestImageQualityMap(idMals) {
+  const ids = [];
+  const seen = new Set();
+  (idMals || []).forEach((raw) => {
+    const id = Number(raw || 0);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    ids.push(id);
+  });
+  if (!ids.length || !canUseProxyApis()) return new Map();
+
+  const missing = ids.filter((id) => !imageQualityCache.has(id));
+  if (missing.length) {
+    try {
+      const r = await fetch(PROXY_IMAGE_QUALITY_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json"
+        },
+        body: JSON.stringify({ ids: missing })
+      });
+      if (r.ok) {
+        const json = await r.json();
+        (json?.items || []).forEach((item) => {
+          const idMal = Number(item?.idMal || 0);
+          if (!idMal) return;
+          imageQualityCache.set(idMal, item);
+        });
+      }
+    } catch {}
+  }
+
+  const map = new Map();
+  ids.forEach((id) => {
+    if (imageQualityCache.has(id)) {
+      map.set(id, imageQualityCache.get(id));
+    }
+  });
+  return map;
+}
+
+async function enhanceCurrentListsImageQuality() {
+  const reqId = ++state.imageEnhanceRequestId;
+  const ids = collectUniqueMalIds(state.trending, state.season, state.top);
+  if (!ids.length || !canUseProxyApis()) return;
+
+  const imageMap = await requestImageQualityMap(ids);
+  if (reqId !== state.imageEnhanceRequestId || !imageMap.size) return;
+
+  state.rawTrending = applyImageMapToList(state.rawTrending, imageMap);
+  state.rawSeason = applyImageMapToList(state.rawSeason, imageMap);
+  state.rawTop = applyImageMapToList(state.rawTop, imageMap);
+  state.trending = applyImageMapToList(state.trending, imageMap);
+  state.season = applyImageMapToList(state.season, imageMap);
+  state.top = applyImageMapToList(state.top, imageMap);
+  renderAllSections();
+  setupBackgroundCycle(state.trending);
+}
+
+async function enhanceSearchRowsImageQuality(rows) {
+  const ids = collectUniqueMalIds(rows);
+  if (!ids.length || !canUseProxyApis()) return rows;
+  const imageMap = await requestImageQualityMap(ids);
+  if (!imageMap.size) return rows;
+  return applyImageMapToList(rows, imageMap);
 }
 
 function toStatus(value) {
@@ -330,6 +552,7 @@ async function fetchFilteredData() {
     trending: Page(page: 1, perPage: 24) {
       media(type: ANIME, sort: TRENDING_DESC${optionalArgs}) {
         id
+        idMal
         title { romaji english native }
         episodes
         averageScore
@@ -343,6 +566,7 @@ async function fetchFilteredData() {
     season: Page(page: 1, perPage: 24) {
       media(type: ANIME, sort: POPULARITY_DESC, season: ${seasonInfo.season}, seasonYear: ${seasonInfo.seasonYear}${optionalArgs}) {
         id
+        idMal
         title { romaji english native }
         averageScore
         season
@@ -356,6 +580,7 @@ async function fetchFilteredData() {
     top: Page(page: 1, perPage: 24) {
       media(type: ANIME, sort: SCORE_DESC${optionalArgs}) {
         id
+        idMal
         title { romaji english native }
         averageScore
         episodes
@@ -557,23 +782,28 @@ function initReveal() {
   });
 }
 
-function setupBackgroundCycle(animes) {
-  const images = animes
-    .map((a) => a.bannerImage || bestCover(a.coverImage))
-    .filter(Boolean)
-    .slice(0, 8);
+async function setupBackgroundCycle(animes) {
+  const cycleToken = ++heroCycleToken;
+  const images = await pickHeroImages(animes);
+  if (cycleToken !== heroCycleToken) return;
   if (!images.length) return;
 
-  el.hero.style.backgroundImage = `url('${cssUrl(images[0])}')`;
-  el.hero.style.backgroundSize = "cover";
-  el.hero.style.backgroundPosition = "center";
+  setHeroImage(images[0]);
 
   el.bg1.style.backgroundImage = `url('${cssUrl(images[0])}')`;
+  el.bg1.style.opacity = "0.3";
+  el.bg2.style.opacity = "0";
+
+  if (heroCycleTimer) {
+    clearInterval(heroCycleTimer);
+    heroCycleTimer = null;
+  }
 
   let i = 0;
   let second = false;
-  setInterval(() => {
+  heroCycleTimer = setInterval(() => {
     i = (i + 1) % images.length;
+    setHeroImage(images[i]);
     if (second) {
       el.bg1.style.backgroundImage = `url('${cssUrl(images[i])}')`;
       el.bg1.style.opacity = "0.3";
@@ -603,7 +833,8 @@ async function runSearch() {
   el.searchResults.innerHTML = "<p>Buscando...</p>";
   try {
     const data = await requestAniList(searchQuery, { search: term });
-    const rows = data.Page?.media || [];
+    let rows = data.Page?.media || [];
+    rows = await enhanceSearchRowsImageQuality(rows);
     el.searchResults.innerHTML = rows.length
       ? rows.map(searchItemTemplate).join("")
       : "<p>Sin resultados.</p>";
@@ -626,6 +857,7 @@ function bindEvents() {
       state.season = state.rawSeason.slice();
       state.top = state.rawTop.slice();
       renderAllSections();
+      enhanceCurrentListsImageQuality();
       return;
     }
 
@@ -640,6 +872,7 @@ function bindEvents() {
       state.season = data.season?.media || [];
       state.top = data.top?.media || [];
       renderAllSections();
+      enhanceCurrentListsImageQuality();
     } catch {
       el.trendingGrid.innerHTML = "<p>No se pudieron cargar resultados para ese filtro.</p>";
       el.seasonGrid.innerHTML = "<p>No se pudieron cargar resultados para ese filtro.</p>";
@@ -682,6 +915,7 @@ function bindEvents() {
     state.season = state.rawSeason.slice();
     state.top = state.rawTop.slice();
     renderAllSections();
+    enhanceCurrentListsImageQuality();
   });
 
   el.globalGenre.addEventListener("change", applyGlobalFilterFromInputs);
@@ -727,6 +961,7 @@ async function loadHome() {
     renderGenreCloud(genres);
     renderStats(trending);
     setupBackgroundCycle(trending);
+    enhanceCurrentListsImageQuality();
   } catch {
     el.trendingGrid.innerHTML = "<p>No se pudieron cargar tendencias.</p>";
     el.seasonGrid.innerHTML = "<p>No se pudo cargar la temporada.</p>";

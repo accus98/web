@@ -1,4 +1,9 @@
-const API_URL = "https://graphql.anilist.co";
+const DIRECT_ANILIST_URL = "https://graphql.anilist.co";
+const PROXY_ANILIST_URL = "/api/anilist";
+const DIRECT_JIKAN_URL = "https://api.jikan.moe/v4";
+const PROXY_JIKAN_URL = "/api/jikan";
+const PROXY_SYNOPSIS_URL = "/api/synopsis";
+const PROXY_IMAGE_QUALITY_URL = "/api/image-quality";
 
 const STATUS_MAP = {
   FINISHED: "Finalizado",
@@ -52,7 +57,6 @@ const el = {
   animeMeta: document.getElementById("animeMeta"),
   animeGenres: document.getElementById("animeGenres"),
   animeDescription: document.getElementById("animeDescription"),
-  anilistLink: document.getElementById("anilistLink"),
   serverTabs: document.getElementById("serverTabs"),
   playerArea: document.getElementById("playerArea"),
   playerTitle: document.getElementById("playerTitle"),
@@ -75,6 +79,9 @@ const state = {
   comments: []
 };
 
+const bannerMetaCache = new Map();
+let headerBackdropToken = 0;
+
 function esc(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -92,8 +99,101 @@ function bestCover(coverImage) {
   return coverImage?.extraLarge || coverImage?.large || coverImage?.medium || "";
 }
 
+function cssUrl(url) {
+  return String(url || "").replace(/'/g, "%27");
+}
+
+function loadImageMeta(url) {
+  const key = String(url || "").trim();
+  if (!key) return Promise.resolve({ width: 0, height: 0 });
+  if (bannerMetaCache.has(key)) return bannerMetaCache.get(key);
+
+  const promise = new Promise((resolve) => {
+    const img = new Image();
+    let settled = false;
+    const finish = (meta) => {
+      if (settled) return;
+      settled = true;
+      resolve(meta);
+    };
+
+    const timeout = setTimeout(() => finish({ width: 0, height: 0 }), 4200);
+    img.onload = () => {
+      clearTimeout(timeout);
+      finish({ width: img.naturalWidth || 0, height: img.naturalHeight || 0 });
+    };
+    img.onerror = () => {
+      clearTimeout(timeout);
+      finish({ width: 0, height: 0 });
+    };
+    img.decoding = "async";
+    img.src = key;
+  });
+
+  bannerMetaCache.set(key, promise);
+  return promise;
+}
+
+function setAnimeHeaderBackdrop(url, lowRes = false) {
+  if (url) {
+    el.animeHeader.style.setProperty("--anime-banner", `url('${cssUrl(url)}')`);
+    el.animeHeader.classList.remove("no-banner");
+  } else {
+    el.animeHeader.style.removeProperty("--anime-banner");
+    el.animeHeader.classList.add("no-banner");
+  }
+  el.animeHeader.classList.toggle("low-res", Boolean(lowRes));
+}
+
+async function refineAnimeHeaderBackdrop(anime) {
+  const token = ++headerBackdropToken;
+  const banner = String(anime?.bannerImage || "").trim();
+  const poster = String(bestCover(anime?.coverImage) || "").trim();
+  if (!banner && !poster) {
+    setAnimeHeaderBackdrop("", false);
+    return;
+  }
+
+  if (banner) {
+    const bannerMeta = await loadImageMeta(banner);
+    if (token !== headerBackdropToken) return;
+
+    if (bannerMeta.width >= 1200 && bannerMeta.height >= 420) {
+      setAnimeHeaderBackdrop(banner, false);
+      return;
+    }
+
+    if (bannerMeta.width >= 860 && bannerMeta.height >= 300) {
+      setAnimeHeaderBackdrop(banner, true);
+      return;
+    }
+  }
+
+  if (poster) {
+    const posterMeta = await loadImageMeta(poster);
+    if (token !== headerBackdropToken) return;
+
+    if (posterMeta.width >= 500 && posterMeta.height >= 700) {
+      setAnimeHeaderBackdrop(poster, true);
+      return;
+    }
+  }
+
+  if (token !== headerBackdropToken) return;
+  if (poster) {
+    setAnimeHeaderBackdrop(poster, true);
+    return;
+  }
+
+  setAnimeHeaderBackdrop("", false);
+}
+
 function cleanDescription(text) {
   return String(text || "Sin sinopsis disponible.")
+    .replace(/\(\s*source\s*:[^)]+\)\s*$/i, "")
+    .replace(/\(\s*fuente\s*:[^)]+\)\s*$/i, "")
+    .replace(/\bsource\s*:[^.]+\.?\s*$/i, "")
+    .replace(/\bfuente\s*:[^.]+\.?\s*$/i, "")
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -101,8 +201,16 @@ function cleanDescription(text) {
 
 function looksSpanish(text) {
   const sample = String(text || "").toLowerCase();
-  if (!sample) return true;
-  return /\b(el|la|los|las|de|del|que|una|uno|con|sin|para|por)\b/.test(sample);
+  if (!sample) return false;
+  if (/[\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1]/.test(sample)) return true;
+  const tokens = sample.match(/[a-z]+/g) || [];
+  const markers = new Set(["los", "las", "una", "uno", "para", "del", "como", "pero", "sus", "esta", "este", "entre", "sobre", "tambien", "despues", "porque", "desde"]);
+  let hits = 0;
+  for (const token of tokens) {
+    if (markers.has(token)) hits += 1;
+    if (hits >= 2) return true;
+  }
+  return false;
 }
 
 function chunkText(text, maxLen = 430) {
@@ -130,7 +238,10 @@ function chunkText(text, maxLen = 430) {
 }
 
 async function translateChunkToSpanish(chunk) {
-  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(chunk)}&langpair=en|es`;
+  const url =
+    window.location.protocol === "file:"
+      ? `https://api.mymemory.translated.net/get?q=${encodeURIComponent(chunk)}&langpair=en|es`
+      : `/api/translate?q=${encodeURIComponent(chunk)}&source=en&target=es`;
   const r = await fetch(url, { headers: { Accept: "application/json" } });
   if (!r.ok) throw new Error(`Translate ${r.status}`);
   const json = await r.json();
@@ -157,7 +268,11 @@ async function translateToSpanish(text) {
 
 async function fetchJikanSynopsis(idMal) {
   if (!idMal) return "";
-  const r = await fetch(`https://api.jikan.moe/v4/anime/${idMal}/full`, {
+  const endpoint =
+    window.location.protocol === "file:"
+      ? `${DIRECT_JIKAN_URL}/anime/${idMal}/full`
+      : `${PROXY_JIKAN_URL}/anime/${idMal}/full`;
+  const r = await fetch(endpoint, {
     headers: { Accept: "application/json" }
   });
   if (!r.ok) return "";
@@ -167,8 +282,64 @@ async function fetchJikanSynopsis(idMal) {
 
 function synopsisCacheKey(anime) {
   const base = cleanDescription(anime?.description || "");
-  const hashPart = `${anime?.id || "x"}_${base.length}`;
+  const hashPart = `${anime?.id || "x"}_${anime?.idMal || "x"}_${base.length}`;
   return `yv_synopsis_es_${hashPart}`;
+}
+
+async function requestSynopsisFromBackend(anime) {
+  const response = await fetch(PROXY_SYNOPSIS_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    body: JSON.stringify({
+      id: anime?.id || 0,
+      idMal: anime?.idMal || 0,
+      description: anime?.description || "",
+      titleEnglish: anime?.title?.english || "",
+      titleRomaji: anime?.title?.romaji || "",
+      titleNative: anime?.title?.native || ""
+    })
+  });
+  if (!response.ok) throw new Error(`Synopsis ${response.status}`);
+  const json = await response.json();
+  return cleanDescription(json?.synopsis || "");
+}
+
+async function requestBestImageByMal(idMal) {
+  if (!idMal || window.location.protocol === "file:") return null;
+  const response = await fetch(PROXY_IMAGE_QUALITY_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    body: JSON.stringify({ ids: [idMal] })
+  });
+  if (!response.ok) throw new Error(`ImageQuality ${response.status}`);
+  const json = await response.json();
+  return (json?.items || []).find((item) => Number(item?.idMal || 0) === Number(idMal)) || null;
+}
+
+async function enhanceAnimeImageQuality(anime) {
+  const idMal = Number(anime?.idMal || 0);
+  if (!idMal) return anime;
+  try {
+    const best = await requestBestImageByMal(idMal);
+    if (!best) return anime;
+    return {
+      ...anime,
+      coverImage: {
+        extraLarge: best.cover || anime?.coverImage?.extraLarge || anime?.coverImage?.large || anime?.coverImage?.medium || "",
+        large: best.cover || anime?.coverImage?.large || anime?.coverImage?.extraLarge || anime?.coverImage?.medium || "",
+        medium: anime?.coverImage?.medium || best.cover || anime?.coverImage?.large || anime?.coverImage?.extraLarge || ""
+      },
+      bannerImage: best.banner || anime?.bannerImage || ""
+    };
+  } catch {
+    return anime;
+  }
 }
 
 async function buildSpanishSynopsis(anime) {
@@ -177,6 +348,18 @@ async function buildSpanishSynopsis(anime) {
     const cached = localStorage.getItem(cacheKey);
     if (cached) return cached;
   } catch {}
+
+  if (window.location.protocol !== "file:") {
+    try {
+      const fromBackend = await requestSynopsisFromBackend(anime);
+      if (fromBackend) {
+        try {
+          localStorage.setItem(cacheKey, fromBackend);
+        } catch {}
+        return fromBackend;
+      }
+    } catch {}
+  }
 
   let base = cleanDescription(anime.description);
   if (!base || base === "Sin sinopsis disponible.") {
@@ -247,22 +430,29 @@ function saveComments() {
 }
 
 function requestAniList(query, variables = {}) {
-  return fetch(API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json"
-    },
-    body: JSON.stringify({ query, variables })
-  })
-    .then((r) => {
-      if (!r.ok) throw new Error(`AniList ${r.status}`);
-      return r.json();
+  const requestAniListFrom = (url) => {
+    return fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({ query, variables })
     })
-    .then((json) => {
-      if (json.errors) throw new Error(json.errors[0]?.message || "GraphQL error");
-      return json.data;
-    });
+      .then((r) => {
+        if (!r.ok) throw new Error(`AniList ${r.status}`);
+        return r.json();
+      })
+      .then((json) => {
+        if (json.errors) throw new Error(json.errors[0]?.message || "GraphQL error");
+        return json.data;
+      });
+  };
+
+  if (window.location.protocol === "file:") {
+    return requestAniListFrom(DIRECT_ANILIST_URL);
+  }
+  return requestAniListFrom(PROXY_ANILIST_URL).catch(() => requestAniListFrom(DIRECT_ANILIST_URL));
 }
 
 function renderHeader() {
@@ -281,10 +471,8 @@ function renderHeader() {
   `;
   el.animeGenres.innerHTML = (anime.genres || []).map((g) => `<span class="genre-pill">${esc(g)}</span>`).join("");
   el.animeDescription.textContent = state.synopsisEs || cleanDescription(anime.description);
-  el.anilistLink.href = anime.siteUrl || "#";
-  el.animeHeader.style.backgroundImage = banner ? `linear-gradient(180deg, rgba(6,12,18,0.55), rgba(6,12,18,0.86)), url('${banner.replace(/'/g, "%27")}')` : "";
-  el.animeHeader.style.backgroundSize = "cover";
-  el.animeHeader.style.backgroundPosition = "center";
+  setAnimeHeaderBackdrop(banner, false);
+  refineAnimeHeaderBackdrop(anime);
 }
 
 function renderServerTabs() {
@@ -430,9 +618,9 @@ async function main() {
       return;
     }
 
-    state.anime = anime;
+    state.anime = await enhanceAnimeImageQuality(anime);
     state.synopsisEs = "Cargando sinopsis...";
-    state.episodes = buildEpisodes(anime);
+    state.episodes = buildEpisodes(state.anime);
     state.currentEpisodeIndex = 0;
     renderHeader();
     state.synopsisEs = await buildSpanishSynopsis(anime);

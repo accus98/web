@@ -1,0 +1,10 @@
+{
+  "name": "yumeverse-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "YumeVerse anime web con proxy backend y cache",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
+
