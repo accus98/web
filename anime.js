@@ -74,6 +74,7 @@ const state = {
   anime: null,
   synopsisEs: "",
   episodes: [],
+  requestedEpisode: 1,
   currentEpisodeIndex: 0,
   currentServer: SERVERS[0],
   comments: []
@@ -81,6 +82,8 @@ const state = {
 
 const bannerMetaCache = new Map();
 let headerBackdropToken = 0;
+const CONTINUE_KEY = "yv_continue_v1";
+const MAX_CONTINUE_ITEMS = 24;
 
 function esc(value) {
   return String(value || "")
@@ -429,6 +432,46 @@ function saveComments() {
   } catch {}
 }
 
+function updateEpisodeQueryParam(epNumber) {
+  if (!state.anime) return;
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set("id", String(state.anime.id));
+    url.searchParams.set("ep", String(Math.max(1, Number(epNumber || 1))));
+    window.history.replaceState(null, "", url.toString());
+  } catch {}
+}
+
+function persistContinueWatching() {
+  const anime = state.anime;
+  const currentEpisode = state.episodes[state.currentEpisodeIndex];
+  if (!anime || !currentEpisode) return;
+
+  const entry = {
+    animeId: Number(anime.id || 0),
+    idMal: Number(anime.idMal || 0),
+    title: pickTitle(anime.title),
+    cover: bestCover(anime.coverImage),
+    banner: String(anime.bannerImage || "").trim(),
+    episodeNumber: Math.max(1, Number(currentEpisode.number || state.currentEpisodeIndex + 1 || 1)),
+    episodeTitle: String(currentEpisode.title || "").trim(),
+    totalEpisodes: Number(anime.episodes || episodeCount() || 0),
+    updatedAt: Date.now(),
+    status: String(anime.status || ""),
+    score: Number(anime.averageScore || 0),
+    genres: Array.isArray(anime.genres) ? anime.genres.slice(0, 6) : []
+  };
+
+  if (!entry.animeId || !entry.title) return;
+
+  try {
+    const list = JSON.parse(localStorage.getItem(CONTINUE_KEY) || "[]");
+    const safe = Array.isArray(list) ? list : [];
+    const next = [entry, ...safe.filter((item) => Number(item?.animeId || 0) !== entry.animeId)].slice(0, MAX_CONTINUE_ITEMS);
+    localStorage.setItem(CONTINUE_KEY, JSON.stringify(next));
+  } catch {}
+}
+
 function requestAniList(query, variables = {}) {
   const requestAniListFrom = (url) => {
     return fetch(url, {
@@ -502,6 +545,8 @@ function renderPlayer() {
       </div>
     `;
     el.playerNote.textContent = `Servidor ${state.currentServer} - Episodio ${epNumber}`;
+    updateEpisodeQueryParam(epNumber);
+    persistContinueWatching();
     return;
   }
 
@@ -510,6 +555,8 @@ function renderPlayer() {
     const src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(trailerId)}?rel=0&modestbranding=1`;
     el.playerArea.innerHTML = `<iframe src="${src}" title="Trailer ${esc(title)}" allowfullscreen loading="lazy"></iframe>`;
     el.playerNote.textContent = `Servidor ${state.currentServer} - Mostrando trailer oficial (no stream pirata)`;
+    updateEpisodeQueryParam(epNumber);
+    persistContinueWatching();
   } else {
     const poster = bestCover(anime.coverImage);
     el.playerArea.innerHTML = `
@@ -521,6 +568,8 @@ function renderPlayer() {
       </div>
     `;
     el.playerNote.textContent = `Servidor ${state.currentServer} seleccionado`;
+    updateEpisodeQueryParam(epNumber);
+    persistContinueWatching();
   }
 }
 
@@ -602,7 +651,9 @@ function bindEvents() {
 }
 
 async function main() {
-  const id = Number(new URLSearchParams(window.location.search).get("id") || 0);
+  const params = new URLSearchParams(window.location.search);
+  const id = Number(params.get("id") || 0);
+  state.requestedEpisode = Math.max(1, Number(params.get("ep") || 1));
   if (!id) {
     el.animeTitle.textContent = "ID invalido";
     el.animeDescription.textContent = "No se recibio un id de anime.";
@@ -621,7 +672,10 @@ async function main() {
     state.anime = await enhanceAnimeImageQuality(anime);
     state.synopsisEs = "Cargando sinopsis...";
     state.episodes = buildEpisodes(state.anime);
-    state.currentEpisodeIndex = 0;
+    state.currentEpisodeIndex = Math.min(
+      Math.max(0, state.requestedEpisode - 1),
+      Math.max(0, state.episodes.length - 1)
+    );
     renderHeader();
     state.synopsisEs = await buildSpanishSynopsis(anime);
     renderHeader();

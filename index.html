@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="es">
 <head>
   <meta charset="utf-8" />
@@ -28,14 +28,14 @@
       <a href="#top">Top</a>
       <a href="#generos">Generos</a>
     </nav>
-    <button class="menu-btn" id="menuBtn" aria-label="Abrir menu">☰</button>
+    <button class="menu-btn" id="menuBtn" aria-label="Abrir menu">&#9776;</button>
   </header>
 
   <main class="container">
     <section class="hero reveal" id="inicio">
       <div class="hero-overlay"></div>
       <div class="hero-content">
-        <p class="eyebrow">Anime hub • Diseno premium</p>
+        <p class="eyebrow">Anime hub &bull; Diseno premium</p>
         <h1>Tu portal anime <span>en serio</span></h1>
         <p>Descubre tendencias, temporada actual y top puntuados con datos en tiempo real.</p>
         <div class="hero-actions">
@@ -49,6 +49,22 @@
         <div id="searchResults" class="search-results"></div>
         <div id="stats" class="stats"></div>
       </div>
+    </section>
+
+    <section class="section reveal continue-section" id="continuar" hidden>
+      <div class="section-head">
+        <h2>Continuar viendo</h2>
+        <button id="continueClear" class="mini-action" type="button">Limpiar historial</button>
+      </div>
+      <div id="continueGrid" class="grid continue-grid"></div>
+    </section>
+
+    <section class="section reveal recommended-section" id="para-ti" hidden>
+      <div class="section-head">
+        <h2>Recomendado para ti</h2>
+        <p>Basado en tus titulos vistos y tus generos favoritos.</p>
+      </div>
+      <div id="recommendedGrid" class="grid cards"></div>
     </section>
 
     <section class="section reveal" id="filtro-general">
@@ -118,7 +134,7 @@
 
   <aside id="modal" class="modal" aria-hidden="true">
     <div class="modal-dialog">
-      <button id="modalClose" class="modal-close" aria-label="Cerrar">×</button>
+      <button id="modalClose" class="modal-close" aria-label="Cerrar">&times;</button>
       <div id="modalBanner" class="modal-banner"></div>
       <div id="modalBody" class="modal-body"></div>
     </div>
@@ -127,3 +143,4 @@
   <script src="app.js"></script>
 </body>
 </html>
+

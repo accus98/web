@@ -44,3 +44,10 @@ Luego abre:
 - La home y la ficha piden `POST /api/image-quality` con `idMal`.
 - El backend compara fuentes de Jikan (cover/trailer) y devuelve la mejor portada y banner disponibles.
 - Se aplica en segundo plano para no frenar la carga inicial.
+
+## Experiencia pro (punto 6)
+
+- Nueva seccion `Continuar viendo` en home (persistente en `localStorage`).
+- Se guarda progreso real por anime/episodio desde la ficha (`anime.html?id=...&ep=...`).
+- Nueva seccion `Recomendado para ti` usando afinidad por generos + score + estado en emision.
+- Flujo estilo plataformas streaming: retomas episodio exacto en un clic.

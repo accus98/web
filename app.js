@@ -9,6 +9,11 @@ const el = {
   bg1: document.querySelector(".bg-1"),
   bg2: document.querySelector(".bg-2"),
   stats: document.getElementById("stats"),
+  continueSection: document.getElementById("continuar"),
+  continueClear: document.getElementById("continueClear"),
+  continueGrid: document.getElementById("continueGrid"),
+  recommendedSection: document.getElementById("para-ti"),
+  recommendedGrid: document.getElementById("recommendedGrid"),
   trendingGrid: document.getElementById("trendingGrid"),
   quickFilters: document.getElementById("quickFilters"),
   globalGenre: document.getElementById("globalGenre"),
@@ -46,6 +51,8 @@ const imageQualityCache = new Map();
 const imageMetaCache = new Map();
 let heroCycleTimer = null;
 let heroCycleToken = 0;
+const CONTINUE_KEY = "yv_continue_v1";
+const MAX_CONTINUE_ITEMS = 24;
 
 const STATUS_MAP = {
   FINISHED: "Finalizado",
@@ -520,6 +527,146 @@ function cleanDescription(text) {
     .trim();
 }
 
+function parseContinueHistory() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CONTINUE_KEY) || "[]");
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((entry) => ({
+        animeId: Number(entry?.animeId || 0),
+        idMal: Number(entry?.idMal || 0),
+        title: String(entry?.title || "").trim(),
+        cover: String(entry?.cover || "").trim(),
+        banner: String(entry?.banner || "").trim(),
+        episodeNumber: Math.max(1, Number(entry?.episodeNumber || 1)),
+        episodeTitle: String(entry?.episodeTitle || "").trim(),
+        totalEpisodes: Math.max(0, Number(entry?.totalEpisodes || 0)),
+        updatedAt: Number(entry?.updatedAt || 0),
+        status: String(entry?.status || "").trim(),
+        score: Number(entry?.score || 0),
+        genres: Array.isArray(entry?.genres)
+          ? entry.genres.map((g) => String(g || "").trim()).filter(Boolean)
+          : []
+      }))
+      .filter((entry) => entry.animeId && entry.title)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, MAX_CONTINUE_ITEMS);
+  } catch {
+    return [];
+  }
+}
+
+function formatTimeAgo(ts) {
+  const time = Number(ts || 0);
+  if (!time) return "Ahora";
+  const diff = Math.max(0, Date.now() - time);
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return "Ahora";
+  if (mins < 60) return `Hace ${mins} min`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `Hace ${hours} h`;
+  const days = Math.floor(hours / 24);
+  return `Hace ${days} d`;
+}
+
+function continueCardTemplate(item) {
+  const title = esc(item.title);
+  const episodeLabel = item.episodeTitle
+    ? esc(item.episodeTitle)
+    : `Episodio ${item.episodeNumber}`;
+  const total = Number(item.totalEpisodes || 0);
+  const progress = total > 0
+    ? Math.max(4, Math.min(100, Math.round((item.episodeNumber / total) * 100)))
+    : Math.max(6, Math.min(100, item.episodeNumber * 7));
+  const bg = item.banner || item.cover || "";
+  return `
+    <article class="continue-card reveal" data-id="${item.animeId}" data-ep="${item.episodeNumber}" style="--continue-bg:url('${cssUrl(bg)}')">
+      <div class="continue-body">
+        <div class="continue-top">
+          <span class="continue-badge">Seguir</span>
+          <span class="continue-time">${esc(formatTimeAgo(item.updatedAt))}</span>
+        </div>
+        <h3 class="continue-title">${title}</h3>
+        <p class="continue-episode">Vas por: ${episodeLabel}</p>
+        <div class="continue-progress">
+          <small>${total > 0 ? `${item.episodeNumber}/${total} episodios` : `${item.episodeNumber} episodios vistos`}</small>
+          <div class="continue-progress-track">
+            <span class="continue-progress-fill" style="width:${progress}%"></span>
+          </div>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderContinueSection() {
+  const list = parseContinueHistory();
+  if (!list.length) {
+    el.continueSection.hidden = true;
+    el.continueGrid.innerHTML = "";
+    return list;
+  }
+  el.continueSection.hidden = false;
+  el.continueGrid.innerHTML = list.map(continueCardTemplate).join("");
+  return list;
+}
+
+function dedupeAnimeList(list) {
+  const out = [];
+  const seen = new Set();
+  (list || []).forEach((anime) => {
+    const id = Number(anime?.id || 0);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push(anime);
+  });
+  return out;
+}
+
+function renderRecommendedSection(history) {
+  const watchedIds = new Set((history || []).map((item) => Number(item.animeId || 0)).filter(Boolean));
+  const genreWeight = new Map();
+  (history || []).forEach((item, idx) => {
+    const weight = Math.max(1, 6 - idx);
+    (item.genres || []).forEach((genre) => {
+      genreWeight.set(genre, (genreWeight.get(genre) || 0) + weight);
+    });
+  });
+
+  const pool = dedupeAnimeList([...state.trending, ...state.season, ...state.top]);
+  if (!pool.length || !genreWeight.size) {
+    el.recommendedSection.hidden = true;
+    el.recommendedGrid.innerHTML = "";
+    return;
+  }
+
+  const ranked = pool
+    .filter((anime) => !watchedIds.has(Number(anime?.id || 0)))
+    .map((anime) => {
+      const genreScore = (anime.genres || []).reduce((acc, genre) => acc + (genreWeight.get(genre) || 0), 0);
+      const score = Number(anime.averageScore || 0);
+      const statusBoost = anime.status === "RELEASING" ? 4 : 0;
+      return { anime, rank: genreScore * 10 + score + statusBoost };
+    })
+    .sort((a, b) => b.rank - a.rank)
+    .slice(0, 8)
+    .map((item) => item.anime);
+
+  if (!ranked.length) {
+    el.recommendedSection.hidden = true;
+    el.recommendedGrid.innerHTML = "";
+    return;
+  }
+
+  el.recommendedSection.hidden = false;
+  el.recommendedGrid.innerHTML = ranked.map(cardTemplate).join("");
+}
+
+function renderPersonalizedSections() {
+  const history = renderContinueSection();
+  renderRecommendedSection(history);
+}
+
 function setSkeleton(target, count, className = "skeleton") {
   target.innerHTML = Array.from({ length: count }).map(() => `<div class="${className}"></div>`).join("");
 }
@@ -648,6 +795,7 @@ function renderAllSections() {
   renderTrending();
   renderSeason();
   renderTop();
+  renderPersonalizedSections();
   lazyLoadImages();
   initReveal();
 }
@@ -817,8 +965,12 @@ async function setupBackgroundCycle(animes) {
   }, 5400);
 }
 
-function openAnimeTab(id) {
-  const url = `anime.html?id=${encodeURIComponent(id)}`;
+function openAnimeTab(id, episode = 0) {
+  const params = new URLSearchParams();
+  params.set("id", String(id));
+  const ep = Number(episode || 0);
+  if (ep > 0) params.set("ep", String(ep));
+  const url = `anime.html?${params.toString()}`;
   window.open(url, "_blank", "noopener");
 }
 
@@ -918,6 +1070,11 @@ function bindEvents() {
     enhanceCurrentListsImageQuality();
   });
 
+  el.continueClear.addEventListener("click", () => {
+    localStorage.removeItem(CONTINUE_KEY);
+    renderPersonalizedSections();
+  });
+
   el.globalGenre.addEventListener("change", applyGlobalFilterFromInputs);
   el.globalStatus.addEventListener("change", applyGlobalFilterFromInputs);
   el.globalScore.addEventListener("input", () => {
@@ -931,9 +1088,19 @@ function bindEvents() {
   document.addEventListener("click", (e) => {
     const clickable = e.target.closest("[data-id]");
     if (!clickable) return;
-    if (e.target.closest(".card") || e.target.closest(".rank") || e.target.closest(".search-item")) {
-      openAnimeTab(clickable.dataset.id);
+    if (
+      e.target.closest(".card") ||
+      e.target.closest(".rank") ||
+      e.target.closest(".search-item") ||
+      e.target.closest(".continue-card")
+    ) {
+      openAnimeTab(clickable.dataset.id, clickable.dataset.ep);
     }
+  });
+
+  window.addEventListener("focus", renderPersonalizedSections);
+  window.addEventListener("storage", (event) => {
+    if (event.key === CONTINUE_KEY) renderPersonalizedSections();
   });
 }
 
@@ -967,11 +1134,13 @@ async function loadHome() {
     el.seasonGrid.innerHTML = "<p>No se pudo cargar la temporada.</p>";
     el.topGrid.innerHTML = "<p>No se pudo cargar el top.</p>";
     el.genreCloud.innerHTML = "<p>Generos no disponibles.</p>";
+    renderPersonalizedSections();
   }
 }
 
 async function main() {
   bindEvents();
+  renderPersonalizedSections();
   await loadHome();
 }
 
