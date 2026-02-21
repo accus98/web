@@ -758,6 +758,10 @@ function renderRecommendedSection(history) {
 function renderPersonalizedSections() {
   const history = renderContinueSection();
   renderRecommendedSection(history);
+  // Estas secciones se re-renderizan en eventos de foco/almacenamiento;
+  // volvemos a enganchar lazy loading y reveal para evitar tarjetas invisibles.
+  lazyLoadImages();
+  initReveal();
 }
 
 function setSkeleton(target, count, className = "skeleton") {
