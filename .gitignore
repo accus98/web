@@ -1,0 +1,4 @@
+node_modules/
+.yv-data/
+.env
+.env.local

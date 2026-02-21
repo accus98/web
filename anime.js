@@ -67,7 +67,9 @@ const el = {
   commentForm: document.getElementById("commentForm"),
   commentName: document.getElementById("commentName"),
   commentText: document.getElementById("commentText"),
-  commentList: document.getElementById("commentList")
+  commentList: document.getElementById("commentList"),
+  favoriteToggle: document.getElementById("favoriteToggle"),
+  pendingToggle: document.getElementById("pendingToggle")
 };
 
 const state = {
@@ -77,7 +79,10 @@ const state = {
   requestedEpisode: 1,
   currentEpisodeIndex: 0,
   currentServer: SERVERS[0],
-  comments: []
+  comments: [],
+  session: { authenticated: false },
+  favoriteActive: false,
+  pendingActive: false
 };
 
 const bannerMetaCache = new Map();
@@ -200,6 +205,95 @@ function cleanDescription(text) {
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isAuthenticated() {
+  return Boolean(state.session?.authenticated);
+}
+
+async function requestJson(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      Accept: "application/json",
+      ...(options.headers || {})
+    }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(String(data?.error || `HTTP ${response.status}`));
+  }
+  return data;
+}
+
+function buildAnimePayload() {
+  if (!state.anime) return null;
+  return {
+    animeId: Number(state.anime.id || 0),
+    idMal: Number(state.anime.idMal || 0),
+    title: pickTitle(state.anime.title),
+    cover: bestCover(state.anime.coverImage),
+    banner: String(state.anime.bannerImage || "").trim(),
+    score: Number(state.anime.averageScore || 0),
+    status: String(state.anime.status || "").trim(),
+    episodes: Number(state.anime.episodes || 0),
+    seasonYear: Number(state.anime.seasonYear || 0),
+    genres: Array.isArray(state.anime.genres) ? state.anime.genres.slice(0, 8) : []
+  };
+}
+
+async function loadProfileFlags() {
+  state.favoriteActive = false;
+  state.pendingActive = false;
+  if (!isAuthenticated() || !state.anime) return;
+
+  try {
+    const json = await requestJson("/api/profile/me");
+    const profile = json?.profile || {};
+    const animeId = Number(state.anime.id || 0);
+    state.favoriteActive = (profile.favorites || []).some((item) => Number(item?.animeId || 0) === animeId);
+    state.pendingActive = (profile.pending || []).some((item) => Number(item?.animeId || 0) === animeId);
+  } catch {}
+}
+
+function renderListButtons() {
+  if (!el.favoriteToggle || !el.pendingToggle) return;
+
+  if (!isAuthenticated()) {
+    el.favoriteToggle.textContent = "Agregar a favoritos";
+    el.pendingToggle.textContent = "Marcar pendiente";
+    el.favoriteToggle.classList.remove("btn-primary");
+    el.pendingToggle.classList.remove("btn-primary");
+    el.favoriteToggle.classList.add("btn-ghost");
+    el.pendingToggle.classList.add("btn-ghost");
+    return;
+  }
+
+  el.favoriteToggle.textContent = state.favoriteActive ? "Quitar de favoritos" : "Agregar a favoritos";
+  el.pendingToggle.textContent = state.pendingActive ? "Quitar de pendientes" : "Marcar pendiente";
+
+  el.favoriteToggle.classList.toggle("btn-primary", state.favoriteActive);
+  el.pendingToggle.classList.toggle("btn-primary", state.pendingActive);
+  el.favoriteToggle.classList.toggle("btn-ghost", !state.favoriteActive);
+  el.pendingToggle.classList.toggle("btn-ghost", !state.pendingActive);
+}
+
+async function toggleList(listName) {
+  const anime = buildAnimePayload();
+  if (!anime) return;
+
+  await requestJson("/api/profile/list/toggle", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      list: listName,
+      anime
+    })
+  });
+  await loadProfileFlags();
+  renderListButtons();
 }
 
 function looksSpanish(text) {
@@ -415,7 +509,8 @@ function buildEpisodes(anime) {
 }
 
 function commentKey() {
-  return state.anime ? `yv_comments_${state.anime.id}` : "yv_comments_unknown";
+  const userId = isAuthenticated() ? String(state.session?.user?.id || "user") : "guest";
+  return state.anime ? `yv_comments_${state.anime.id}_${userId}` : `yv_comments_unknown_${userId}`;
 }
 
 function loadComments() {
@@ -463,6 +558,33 @@ function persistContinueWatching() {
   };
 
   if (!entry.animeId || !entry.title) return;
+
+  if (isAuthenticated()) {
+    requestJson("/api/profile/history/upsert", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        anime: {
+          animeId: entry.animeId,
+          idMal: entry.idMal,
+          title: entry.title,
+          cover: entry.cover,
+          banner: entry.banner,
+          score: entry.score,
+          status: entry.status,
+          episodes: Number(anime.episodes || 0),
+          seasonYear: Number(anime.seasonYear || 0),
+          genres: entry.genres
+        },
+        episodeNumber: entry.episodeNumber,
+        episodeTitle: entry.episodeTitle,
+        totalEpisodes: entry.totalEpisodes
+      })
+    }).catch(() => {});
+    return;
+  }
 
   try {
     const list = JSON.parse(localStorage.getItem(CONTINUE_KEY) || "[]");
@@ -648,9 +770,35 @@ function bindEvents() {
     renderComments();
     el.commentText.value = "";
   });
+
+  if (el.favoriteToggle) {
+    el.favoriteToggle.addEventListener("click", async () => {
+      if (!window.YVAuth?.requireAuth("Inicia sesion para guardar favoritos.")) return;
+      await toggleList("favorites");
+    });
+  }
+
+  if (el.pendingToggle) {
+    el.pendingToggle.addEventListener("click", async () => {
+      if (!window.YVAuth?.requireAuth("Inicia sesion para guardar pendientes.")) return;
+      await toggleList("pending");
+    });
+  }
 }
 
 async function main() {
+  if (window.YVAuth?.init) {
+    await window.YVAuth.init();
+    state.session = window.YVAuth.getSession();
+    window.YVAuth.onChange(async (session) => {
+      state.session = session;
+      loadComments();
+      renderComments();
+      await loadProfileFlags();
+      renderListButtons();
+    });
+  }
+
   const params = new URLSearchParams(window.location.search);
   const id = Number(params.get("id") || 0);
   state.requestedEpisode = Math.max(1, Number(params.get("ep") || 1));
@@ -679,6 +827,8 @@ async function main() {
     renderHeader();
     state.synopsisEs = await buildSpanishSynopsis(anime);
     renderHeader();
+    await loadProfileFlags();
+    renderListButtons();
     renderServerTabs();
     renderPlayer();
     renderEpisodes();

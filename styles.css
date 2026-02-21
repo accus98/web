@@ -16,6 +16,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
@@ -118,6 +122,94 @@ a {
 
 .nav a:hover {
   color: #fff;
+}
+
+.header-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.tool-btn {
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #dce9ff;
+  padding: 8px 12px;
+  font: inherit;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+
+.tool-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 123, 28, 0.7);
+  background: rgba(255, 123, 28, 0.16);
+}
+
+.tool-btn-profile {
+  max-width: 240px;
+}
+
+.tool-btn-auth {
+  border-color: rgba(7, 215, 167, 0.64);
+  background: rgba(7, 215, 167, 0.14);
+  color: #c8fff2;
+}
+
+.tool-btn-logout {
+  border-color: rgba(255, 76, 41, 0.5);
+  background: rgba(255, 76, 41, 0.12);
+  color: #ffd8cf;
+}
+
+.tool-btn-logout:hover {
+  border-color: rgba(255, 76, 41, 0.84);
+  background: rgba(255, 76, 41, 0.2);
+}
+
+.profile-link {
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke);
+  background: rgba(255, 255, 255, 0.04);
+  display: inline-grid;
+  place-items: center;
+  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+
+.profile-link:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 123, 28, 0.74);
+  background: rgba(255, 123, 28, 0.14);
+}
+
+.profile-logo {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: linear-gradient(120deg, var(--accent-0), var(--accent-2));
+  color: #041019;
+  display: grid;
+  place-items: center;
+  font-family: "Bebas Neue", sans-serif;
+  font-size: 1.05rem;
+  letter-spacing: 0.6px;
+  font-weight: 700;
+}
+
+.profile-avatar {
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  object-fit: cover;
+  display: block;
 }
 
 .menu-btn {
@@ -236,6 +328,12 @@ a {
   color: #fff;
   border-color: var(--stroke);
   background: rgba(255, 255, 255, 0.04);
+}
+
+.btn-danger {
+  color: #fff;
+  border-color: rgba(255, 76, 41, 0.48);
+  background: rgba(255, 76, 41, 0.18);
 }
 
 .search {
@@ -580,6 +678,18 @@ a {
   font-size: 1rem;
 }
 
+.profile-card-actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+
+.profile-card-actions .btn {
+  flex: 1;
+  padding: 8px 10px;
+  font-size: 0.82rem;
+}
+
 .meta {
   display: flex;
   flex-wrap: wrap;
@@ -693,6 +803,214 @@ a {
   font-size: 1.85rem;
 }
 
+.auth-dialog {
+  width: min(920px, 100%);
+  overflow: hidden;
+}
+
+.auth-shell {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(0, 1fr);
+  min-height: 460px;
+}
+
+.auth-visual {
+  padding: 26px 24px;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(255, 123, 28, 0.42), transparent 50%),
+    radial-gradient(circle at 80% 84%, rgba(7, 215, 167, 0.22), transparent 54%),
+    linear-gradient(160deg, #121f36 0%, #0b1425 100%);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.auth-logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 14px;
+  background: linear-gradient(120deg, rgba(255, 123, 28, 0.95), rgba(255, 76, 41, 0.95));
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-family: "Bebas Neue", sans-serif;
+  letter-spacing: 1px;
+  font-size: 2rem;
+}
+
+.auth-visual h4 {
+  margin: 2px 0 0;
+  font-size: 2.1rem;
+  font-family: "Bebas Neue", sans-serif;
+  letter-spacing: 0.7px;
+}
+
+.auth-visual p {
+  margin: 0;
+  color: #d2e0f7;
+  line-height: 1.55;
+}
+
+.auth-orbs {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+
+.auth-orbs span {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.auth-orbs span:nth-child(2) {
+  background: rgba(255, 123, 28, 0.92);
+}
+
+.auth-orbs span:nth-child(3) {
+  background: rgba(7, 215, 167, 0.92);
+}
+
+.auth-body {
+  padding: 30px 28px 24px;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.auth-body h3 {
+  margin: 0;
+  font-size: 2rem;
+  font-family: "Bebas Neue", sans-serif;
+  letter-spacing: 0.7px;
+}
+
+.auth-body p {
+  margin: 0;
+  color: var(--text-1);
+}
+
+.auth-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.auth-mode-btn {
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  min-height: 38px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #d8e6ff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.auth-mode-btn:hover {
+  border-color: rgba(255, 123, 28, 0.68);
+}
+
+.auth-mode-btn.active {
+  border-color: rgba(255, 123, 28, 0.9);
+  background: rgba(255, 123, 28, 0.18);
+}
+
+.auth-form {
+  margin-top: 2px;
+  display: grid;
+  gap: 8px;
+}
+
+.auth-label {
+  font-size: 0.86rem;
+  color: #cbdbf4;
+  font-weight: 700;
+}
+
+.auth-input {
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  color: #fff;
+  padding: 10px 12px;
+  font: inherit;
+  outline: none;
+}
+
+.auth-input:focus {
+  border-color: rgba(255, 123, 28, 0.88);
+}
+
+.auth-form .btn {
+  margin-top: 4px;
+  min-height: 42px;
+}
+
+.auth-google-section {
+  display: grid;
+  gap: 8px;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #a8bddc;
+  font-size: 0.82rem;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.auth-google-wrap {
+  min-height: 44px;
+  display: grid;
+  align-items: center;
+  justify-items: start;
+}
+
+.auth-helper {
+  min-height: 20px;
+  font-size: 0.88rem;
+}
+
+.auth-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.auth-actions-stack {
+  margin-top: 4px;
+}
+
+.auth-actions-stack .btn {
+  min-height: 42px;
+}
+
+.auth-message {
+  margin: 2px 0 0;
+  font-size: 0.86rem;
+  min-height: 20px;
+}
+
+.auth-message.error {
+  color: #ff9f8e;
+}
+
+.auth-message.success {
+  color: #88f2d8;
+}
+
 .modal-desc {
   color: #d5ddec;
   line-height: 1.52;
@@ -717,6 +1035,133 @@ a {
 .empty-note {
   margin: 0;
   color: var(--text-1);
+}
+
+.mini-action-danger {
+  border-color: rgba(255, 76, 41, 0.45);
+  color: #ffd7cf;
+  background: rgba(255, 76, 41, 0.12);
+}
+
+.anime-list-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.anime-list-actions .btn {
+  min-height: 40px;
+}
+
+.profile-page {
+  display: grid;
+  gap: 18px;
+}
+
+.profile-page .section {
+  margin-top: 0;
+}
+
+.profile-hero {
+  position: relative;
+  border-radius: 20px;
+  padding: 22px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 8% 8%, rgba(7, 215, 167, 0.14), transparent 42%),
+    radial-gradient(circle at 90% 18%, rgba(255, 123, 28, 0.2), transparent 44%),
+    linear-gradient(165deg, rgba(8, 14, 26, 0.9) 0%, rgba(5, 10, 18, 0.94) 100%);
+  box-shadow: var(--shadow);
+}
+
+.profile-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(120deg, rgba(255, 255, 255, 0.03), transparent 28%),
+    linear-gradient(0deg, rgba(6, 13, 24, 0.42), rgba(6, 13, 24, 0));
+}
+
+.profile-hero-main {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 10px;
+}
+
+.profile-hero-main h1 {
+  margin: 0;
+  font-family: "Bebas Neue", sans-serif;
+  letter-spacing: 0.7px;
+  font-size: clamp(2rem, 5vw, 3.1rem);
+}
+
+.profile-email {
+  margin: 0;
+  color: #c7d7f0;
+}
+
+.profile-logout-btn {
+  margin-top: 8px;
+  width: fit-content;
+}
+
+.profile-stats {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  min-width: min(520px, 100%);
+}
+
+.profile-stat {
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  display: grid;
+  gap: 3px;
+}
+
+.profile-stat b {
+  font-size: 1.25rem;
+}
+
+.profile-stat span {
+  color: var(--text-1);
+  font-size: 0.86rem;
+}
+
+.profile-gate {
+  border-radius: 16px;
+  padding: 20px;
+  display: grid;
+  gap: 8px;
+}
+
+.profile-gate h2 {
+  margin: 0;
+  font-family: "Bebas Neue", sans-serif;
+  letter-spacing: 0.6px;
+  font-size: clamp(1.7rem, 4.2vw, 2.35rem);
+}
+
+.profile-gate p {
+  margin: 0;
+  color: var(--text-1);
+}
+
+.profile-gate .btn {
+  margin-top: 6px;
+  width: fit-content;
 }
 
 .anime-header::before {
@@ -1033,6 +1478,12 @@ a {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .profile-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    min-width: 0;
+    width: 100%;
+  }
+
   .wide {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1082,6 +1533,30 @@ a {
     display: inline-flex;
   }
 
+  .header-tools {
+    margin-left: 0;
+  }
+
+  .tool-btn {
+    padding: 7px 10px;
+    font-size: 0.82rem;
+  }
+
+  .tool-btn-profile {
+    max-width: 150px;
+  }
+
+  .profile-link {
+    width: 34px;
+    height: 34px;
+  }
+
+  .profile-logo {
+    width: 22px;
+    height: 22px;
+    font-size: 0.92rem;
+  }
+
   .search {
     grid-template-columns: 1fr;
   }
@@ -1102,6 +1577,38 @@ a {
   .continue-grid {
     grid-template-columns: 1fr;
   }
+
+  .profile-hero {
+    flex-direction: column;
+  }
+
+  .profile-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .auth-shell {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+
+  .auth-visual {
+    border-right: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 18px;
+    gap: 10px;
+  }
+
+  .auth-visual h4 {
+    font-size: 1.6rem;
+  }
+
+  .auth-body {
+    padding: 20px 16px 16px;
+  }
+
+  .auth-actions {
+    flex-direction: column;
+  }
 }
 
 @media (max-width: 500px) {
@@ -1111,6 +1618,21 @@ a {
 
   .cards {
     grid-template-columns: 1fr;
+  }
+
+  .profile-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .header {
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+
+  .header-tools {
+    order: 3;
+    width: 100%;
+    justify-content: flex-end;
   }
 
   .hero h1 {

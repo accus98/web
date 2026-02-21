@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>YumeVerse | Mi perfil</title>
+  <meta name="description" content="Perfil de usuario con animes vistos, favoritos, pendientes y recomendaciones personalizadas." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg" aria-hidden="true">
+    <div class="bg-layer bg-1"></div>
+    <div class="bg-layer bg-2"></div>
+    <div class="bg-noise"></div>
+  </div>
+
+  <header class="header glass">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">YV</span>
+      <span class="brand-text">YumeVerse</span>
+    </a>
+    <nav class="nav">
+      <a href="index.html#tendencias">Tendencias</a>
+      <a href="index.html#temporada">Temporada</a>
+      <a href="index.html#top">Top</a>
+      <a href="index.html#generos">Generos</a>
+    </nav>
+    <div class="header-tools">
+      <a id="profileLink" class="profile-link" href="profile.html" aria-label="Mi perfil" title="Mi perfil">
+        <img id="profileAvatar" class="profile-avatar" alt="Mi perfil" hidden />
+        <span id="profileLogo" class="profile-logo">YV</span>
+      </a>
+    </div>
+  </header>
+
+  <main class="container profile-page">
+    <section class="profile-hero glass">
+      <div class="profile-hero-main">
+        <p class="eyebrow">Mi perfil</p>
+        <h1 id="profileName">Invitado</h1>
+        <p id="profileEmail" class="profile-email">Inicia sesion para desbloquear tus listas.</p>
+        <button id="profileLogoutBtn" class="btn btn-danger profile-logout-btn" type="button" hidden>Cerrar sesion</button>
+      </div>
+      <div id="profileStats" class="profile-stats"></div>
+    </section>
+
+    <section id="profileGate" class="profile-gate glass" hidden>
+      <h2>Inicia sesion para ver tu perfil</h2>
+      <p>Aqui podras gestionar tu historial, favoritos, pendientes y recomendaciones personalizadas.</p>
+      <button id="profileGateBtn" class="btn btn-primary" type="button">Iniciar sesion</button>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Continuar viendo</h2>
+        <button id="clearHistoryBtn" class="mini-action" type="button">Limpiar historial</button>
+      </div>
+      <div id="profileHistoryGrid" class="grid continue-grid"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Favoritos</h2>
+        <p>Titulos que quieres tener siempre a mano.</p>
+      </div>
+      <div id="profileFavoritesGrid" class="grid cards"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Pendientes</h2>
+        <p>Series para ver despues.</p>
+      </div>
+      <div id="profilePendingGrid" class="grid cards"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Recomendados para ti</h2>
+        <p>Generados segun tus gustos y actividad.</p>
+      </div>
+      <div id="profileRecommendedGrid" class="grid cards"></div>
+    </section>
+  </main>
+
+  <script src="auth.js"></script>
+  <script src="profile.js"></script>
+</body>
+</html>

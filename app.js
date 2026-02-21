@@ -5,6 +5,9 @@ const PROXY_IMAGE_QUALITY_URL = "/api/image-quality";
 const el = {
   nav: document.getElementById("nav"),
   menuBtn: document.getElementById("menuBtn"),
+  authTrigger: document.getElementById("authTrigger"),
+  logoutBtn: document.getElementById("logoutBtn"),
+  profileLink: document.getElementById("profileLink"),
   hero: document.querySelector(".hero"),
   bg1: document.querySelector(".bg-1"),
   bg2: document.querySelector(".bg-2"),
@@ -41,6 +44,13 @@ const state = {
   season: [],
   top: [],
   genres: [],
+  session: { authenticated: false },
+  profile: {
+    history: [],
+    favorites: [],
+    pending: [],
+    stats: { history: 0, favorites: 0, pending: 0 }
+  },
   globalFilter: { genre: "", status: "", score: "" },
   trendingFilter: "all",
   filterRequestId: 0,
@@ -527,7 +537,55 @@ function cleanDescription(text) {
     .trim();
 }
 
-function parseContinueHistory() {
+function isAuthenticated() {
+  return Boolean(state.session?.authenticated);
+}
+
+async function requestJson(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      Accept: "application/json",
+      ...(options.headers || {})
+    }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(String(data?.error || `HTTP ${response.status}`));
+  }
+  return data;
+}
+
+async function loadRemoteProfile() {
+  if (!isAuthenticated()) {
+    state.profile = {
+      history: [],
+      favorites: [],
+      pending: [],
+      stats: { history: 0, favorites: 0, pending: 0 }
+    };
+    return;
+  }
+
+  try {
+    const json = await requestJson("/api/profile/me");
+    state.profile = json?.profile || {
+      history: [],
+      favorites: [],
+      pending: [],
+      stats: { history: 0, favorites: 0, pending: 0 }
+    };
+  } catch {
+    state.profile = {
+      history: [],
+      favorites: [],
+      pending: [],
+      stats: { history: 0, favorites: 0, pending: 0 }
+    };
+  }
+}
+
+function parseLocalContinueHistory() {
   try {
     const raw = JSON.parse(localStorage.getItem(CONTINUE_KEY) || "[]");
     if (!Array.isArray(raw)) return [];
@@ -554,6 +612,34 @@ function parseContinueHistory() {
   } catch {
     return [];
   }
+}
+
+function parseRemoteContinueHistory() {
+  const raw = Array.isArray(state.profile?.history) ? state.profile.history : [];
+  return raw
+    .map((entry) => ({
+      animeId: Number(entry?.animeId || 0),
+      idMal: Number(entry?.idMal || 0),
+      title: String(entry?.title || "").trim(),
+      cover: String(entry?.cover || "").trim(),
+      banner: String(entry?.banner || "").trim(),
+      episodeNumber: Math.max(1, Number(entry?.episodeNumber || 1)),
+      episodeTitle: String(entry?.episodeTitle || "").trim(),
+      totalEpisodes: Math.max(0, Number(entry?.totalEpisodes || entry?.episodes || 0)),
+      updatedAt: Number(entry?.updatedAt || 0),
+      status: String(entry?.status || "").trim(),
+      score: Number(entry?.score || 0),
+      genres: Array.isArray(entry?.genres)
+        ? entry.genres.map((g) => String(g || "").trim()).filter(Boolean)
+        : []
+    }))
+    .filter((entry) => entry.animeId && entry.title)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, MAX_CONTINUE_ITEMS);
+}
+
+function parseContinueHistory() {
+  return isAuthenticated() ? parseRemoteContinueHistory() : parseLocalContinueHistory();
 }
 
 function formatTimeAgo(ts) {
@@ -624,9 +710,16 @@ function dedupeAnimeList(list) {
 }
 
 function renderRecommendedSection(history) {
-  const watchedIds = new Set((history || []).map((item) => Number(item.animeId || 0)).filter(Boolean));
+  const favorites = Array.isArray(state.profile?.favorites) ? state.profile.favorites : [];
+  const pending = Array.isArray(state.profile?.pending) ? state.profile.pending : [];
+  const watchedIds = new Set(
+    [...(history || []), ...favorites, ...pending]
+      .map((item) => Number(item.animeId || 0))
+      .filter(Boolean)
+  );
   const genreWeight = new Map();
-  (history || []).forEach((item, idx) => {
+  const historyAndLists = [...(history || []), ...favorites, ...pending];
+  historyAndLists.forEach((item, idx) => {
     const weight = Math.max(1, 6 - idx);
     (item.genres || []).forEach((genre) => {
       genreWeight.set(genre, (genreWeight.get(genre) || 0) + weight);
@@ -1034,7 +1127,6 @@ function bindEvents() {
 
   el.menuBtn.addEventListener("click", () => el.nav.classList.toggle("show"));
   el.nav.querySelectorAll("a").forEach((a) => a.addEventListener("click", () => el.nav.classList.remove("show")));
-
   el.searchInput.addEventListener("input", () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(runSearch, 320);
@@ -1070,7 +1162,15 @@ function bindEvents() {
     enhanceCurrentListsImageQuality();
   });
 
-  el.continueClear.addEventListener("click", () => {
+  el.continueClear.addEventListener("click", async () => {
+    if (isAuthenticated()) {
+      try {
+        await requestJson("/api/profile/history/clear", { method: "POST" });
+        await loadRemoteProfile();
+      } catch {}
+      renderPersonalizedSections();
+      return;
+    }
     localStorage.removeItem(CONTINUE_KEY);
     renderPersonalizedSections();
   });
@@ -1098,7 +1198,13 @@ function bindEvents() {
     }
   });
 
-  window.addEventListener("focus", renderPersonalizedSections);
+  window.addEventListener("focus", async () => {
+    if (window.YVAuth?.refreshSession) {
+      state.session = await window.YVAuth.refreshSession();
+      await loadRemoteProfile();
+    }
+    renderPersonalizedSections();
+  });
   window.addEventListener("storage", (event) => {
     if (event.key === CONTINUE_KEY) renderPersonalizedSections();
   });
@@ -1139,6 +1245,16 @@ async function loadHome() {
 }
 
 async function main() {
+  if (window.YVAuth?.init) {
+    await window.YVAuth.init();
+    state.session = window.YVAuth.getSession();
+    await loadRemoteProfile();
+    window.YVAuth.onChange(async (session) => {
+      state.session = session;
+      await loadRemoteProfile();
+      renderAllSections();
+    });
+  }
   bindEvents();
   renderPersonalizedSections();
   await loadHome();

@@ -1,28 +1,60 @@
-# YumeVerse (Fase 1)
+# YumeVerse
 
-Fase 1 agrega una base estable para la web:
+YumeVerse es una web de anime con diseno oscuro, animaciones suaves y datos en tiempo real.
 
-- Backend local para servir la pagina (`http://localhost:8787`).
-- Proxy para AniList, Jikan y traduccion.
-- Cache en memoria para reducir tiempos de carga y limites de API.
-
-## Como iniciar
+## Arranque rapido
 
 ```bash
+npm install
 npm start
 ```
 
-Luego abre:
+Abre:
 
 - `http://localhost:8787`
 
-## Inicio rapido en Windows (doble clic)
+## Login y registro
 
-- Ejecuta `Iniciar-YumeVerse.bat`
-- Se abrira el navegador automaticamente en `http://localhost:8787`
+El sistema de autenticacion ya incluye:
 
-## Endpoints del backend
+- Login/registro local con correo y contrasena (funciona sin configurar nada externo)
+- Login con Google (opcional, autoregistro en el primer acceso)
 
+Configura variables de entorno antes de iniciar:
+
+```bash
+set GOOGLE_CLIENT_ID=tu_google_client_id.apps.googleusercontent.com
+set SESSION_SECRET=una_clave_larga_y_segura
+npm start
+```
+
+Si no defines `GOOGLE_CLIENT_ID`, sigue funcionando el login por correo.
+
+## Que guarda por usuario
+
+Cada cuenta tiene su propio perfil en backend:
+
+- Historial de animes vistos y episodio actual
+- Favoritos
+- Pendientes
+- Recomendaciones personalizadas
+
+La pagina `profile.html` muestra todo en "Mi perfil".
+
+## Endpoints principales
+
+- `GET /api/config`
+- `GET /api/auth/session`
+- `POST /api/auth/google`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/profile/me`
+- `POST /api/profile/list/toggle`
+- `POST /api/profile/history/upsert`
+- `POST /api/profile/history/remove`
+- `POST /api/profile/history/clear`
+- `GET /api/profile/recommendations`
 - `POST /api/anilist`
 - `GET /api/jikan/*`
 - `GET /api/translate?q=texto&source=en&target=es`
@@ -30,24 +62,6 @@ Luego abre:
 - `POST /api/image-quality`
 - `GET /api/health`
 
-## Fase 2 y 3 (sinopsis)
+## Inicio rapido en Windows
 
-- La ficha usa `POST /api/synopsis` para pedir sinopsis en espanol.
-- Orden de fuentes cuando falta descripcion:
-  1. AniList (si trae descripcion)
-  2. Jikan (MyAnimeList)
-  3. Kitsu (busqueda por titulo)
-- La traduccion y el resultado se guardan en cache del backend para reducir errores y tiempos.
-
-## Mejora de imagenes (punto 4)
-
-- La home y la ficha piden `POST /api/image-quality` con `idMal`.
-- El backend compara fuentes de Jikan (cover/trailer) y devuelve la mejor portada y banner disponibles.
-- Se aplica en segundo plano para no frenar la carga inicial.
-
-## Experiencia pro (punto 6)
-
-- Nueva seccion `Continuar viendo` en home (persistente en `localStorage`).
-- Se guarda progreso real por anime/episodio desde la ficha (`anime.html?id=...&ep=...`).
-- Nueva seccion `Recomendado para ti` usando afinidad por generos + score + estado en emision.
-- Flujo estilo plataformas streaming: retomas episodio exacto en un clic.
+- Ejecuta `Iniciar-YumeVerse.bat`
