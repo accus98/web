@@ -5,6 +5,7 @@ const PROXY_IMAGE_QUALITY_URL = "/api/image-quality";
 const el = {
   nav: document.getElementById("nav"),
   menuBtn: document.getElementById("menuBtn"),
+  headerSearchBtn: document.getElementById("headerSearchBtn"),
   authTrigger: document.getElementById("authTrigger"),
   logoutBtn: document.getElementById("logoutBtn"),
   profileLink: document.getElementById("profileLink"),
@@ -27,6 +28,7 @@ const el = {
   seasonGrid: document.getElementById("seasonGrid"),
   topGrid: document.getElementById("topGrid"),
   genreCloud: document.getElementById("genreCloud"),
+  searchShell: document.getElementById("searchShell"),
   searchInput: document.getElementById("searchInput"),
   searchBtn: document.getElementById("searchBtn"),
   searchResults: document.getElementById("searchResults"),
@@ -1073,10 +1075,14 @@ function openAnimeTab(id, episode = 0) {
 
 let searchTimer = null;
 let globalFilterTimer = null;
+function clearSearchResults() {
+  el.searchResults.innerHTML = "";
+}
+
 async function runSearch() {
   const term = el.searchInput.value.trim();
   if (term.length < 2) {
-    el.searchResults.innerHTML = "";
+    clearSearchResults();
     return;
   }
   el.searchResults.innerHTML = "<p>Buscando...</p>";
@@ -1131,12 +1137,23 @@ function bindEvents() {
 
   el.menuBtn.addEventListener("click", () => el.nav.classList.toggle("show"));
   el.nav.querySelectorAll("a").forEach((a) => a.addEventListener("click", () => el.nav.classList.remove("show")));
+  if (el.headerSearchBtn) {
+    el.headerSearchBtn.addEventListener("click", () => {
+      const section = document.getElementById("inicio");
+      section?.scrollIntoView({ behavior: "smooth", block: "start" });
+      setTimeout(() => {
+        el.searchInput.focus();
+        el.searchInput.select();
+      }, 180);
+    });
+  }
   el.searchInput.addEventListener("input", () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(runSearch, 320);
   });
   el.searchInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") runSearch();
+    if (e.key === "Escape") clearSearchResults();
   });
   el.searchBtn.addEventListener("click", runSearch);
 
@@ -1190,6 +1207,11 @@ function bindEvents() {
   });
 
   document.addEventListener("click", (e) => {
+    const insideSearch = el.searchShell?.contains(e.target);
+    if (!insideSearch) {
+      clearSearchResults();
+    }
+
     const clickable = e.target.closest("[data-id]");
     if (!clickable) return;
     if (
@@ -1198,6 +1220,7 @@ function bindEvents() {
       e.target.closest(".search-item") ||
       e.target.closest(".continue-card")
     ) {
+      if (e.target.closest(".search-item")) clearSearchResults();
       openAnimeTab(clickable.dataset.id, clickable.dataset.ep);
     }
   });

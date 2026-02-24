@@ -34,6 +34,7 @@
     profileLink: null,
     profileLogo: null,
     profileAvatar: null,
+    profileLabel: null,
     authModal: null,
     authClose: null,
     authCloseAction: null,
@@ -178,6 +179,16 @@
         el.profileLogo.textContent = "YV";
         el.profileLogo.hidden = false;
       }
+    }
+
+    if (el.profileLabel) {
+      el.profileLabel.textContent = authenticated ? "Mi perfil" : "Iniciar sesion";
+    }
+
+    if (el.profileLink) {
+      const title = authenticated ? "Mi perfil" : "Iniciar sesion";
+      el.profileLink.setAttribute("title", title);
+      el.profileLink.setAttribute("aria-label", title);
     }
 
     if (el.profileAvatar) {
@@ -644,6 +655,7 @@
     el.profileLink = byId("profileLink");
     el.profileLogo = byId("profileLogo") || document.querySelector(".profile-logo");
     el.profileAvatar = byId("profileAvatar");
+    el.profileLabel = byId("profileLabel");
 
     ensureModalDom();
     updateHeaderUI();

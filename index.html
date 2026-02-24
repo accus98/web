@@ -29,9 +29,15 @@
       <a href="#generos">Generos</a>
     </nav>
     <div class="header-tools">
+      <button id="headerSearchBtn" class="header-icon-btn" type="button" aria-label="Buscar anime" title="Buscar anime">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M10.5 3a7.5 7.5 0 1 0 4.77 13.29l4.72 4.72 1.41-1.41-4.72-4.72A7.5 7.5 0 0 0 10.5 3Zm0 2a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11Z" />
+        </svg>
+      </button>
       <a id="profileLink" class="profile-link" href="profile.html" aria-label="Mi perfil" title="Mi perfil">
         <img id="profileAvatar" class="profile-avatar" alt="Mi perfil" hidden />
         <span id="profileLogo" class="profile-logo">YV</span>
+        <span id="profileLabel" class="profile-label">Iniciar sesion</span>
       </a>
     </div>
     <button class="menu-btn" id="menuBtn" aria-label="Abrir menu">&#9776;</button>
@@ -48,11 +54,17 @@
           <a class="btn btn-primary" href="#tendencias">Ver tendencias</a>
           <a class="btn btn-ghost" href="#top">Ver top</a>
         </div>
-        <div class="search">
-          <input id="searchInput" type="search" placeholder="Buscar anime (ej: Naruto, Bleach...)" autocomplete="off" />
-          <button id="searchBtn" class="btn btn-primary" type="button">Buscar</button>
+        <div id="searchShell" class="search-shell">
+          <div class="search">
+            <input id="searchInput" type="search" placeholder="Buscar anime (ej: Naruto, Bleach...)" autocomplete="off" />
+            <button id="searchBtn" class="btn btn-primary search-submit" type="button" aria-label="Buscar anime" title="Buscar anime">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M10.5 3a7.5 7.5 0 1 0 4.77 13.29l4.72 4.72 1.41-1.41-4.72-4.72A7.5 7.5 0 0 0 10.5 3Zm0 2a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11Z" />
+              </svg>
+            </button>
+          </div>
+          <div id="searchResults" class="search-results"></div>
         </div>
-        <div id="searchResults" class="search-results"></div>
         <div id="stats" class="stats"></div>
       </div>
     </section>
