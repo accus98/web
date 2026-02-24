@@ -63,6 +63,7 @@ const imageQualityCache = new Map();
 const imageMetaCache = new Map();
 let heroCycleTimer = null;
 let heroCycleToken = 0;
+let searchHeroToken = 0;
 const CONTINUE_KEY = "yv_continue_v1";
 const MAX_CONTINUE_ITEMS = 24;
 
@@ -961,12 +962,13 @@ function topTemplate(anime, idx) {
   </article>`;
 }
 
-function searchItemTemplate(anime) {
+function searchItemTemplate(anime, idx = 0) {
   const title = esc(pickTitle(anime.title));
   const image = bestCover(anime.coverImage);
   const srcset = coverSrcSet(anime.coverImage);
+  const delay = Math.max(0, Math.min(7, Number(idx || 0))) * 34;
   return `
-  <article class="search-item" data-id="${anime.id}">
+  <article class="search-item" data-id="${anime.id}" style="--si-delay:${delay}ms">
     <img data-src="${esc(image)}" data-srcset="${srcset}" data-sizes="58px" alt="${title}" loading="lazy" />
     <div>
       <h3>${title}</h3>
@@ -1064,6 +1066,84 @@ async function setupBackgroundCycle(animes) {
   }, 5400);
 }
 
+function stopHeroCycle() {
+  if (heroCycleTimer) {
+    clearInterval(heroCycleTimer);
+    heroCycleTimer = null;
+  }
+  heroCycleToken += 1;
+}
+
+function normalizeSearchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
+function animeTitleCandidates(anime) {
+  const title = anime?.title || {};
+  return [title.romaji, title.english, title.native]
+    .map((value) => normalizeSearchText(value))
+    .filter(Boolean);
+}
+
+function pickSearchFocusAnime(rows, term) {
+  if (!Array.isArray(rows) || !rows.length) return null;
+  const needle = normalizeSearchText(term);
+  if (!needle) return rows[0] || null;
+
+  const scored = rows
+    .map((anime) => {
+      const titles = animeTitleCandidates(anime);
+      let score = 0;
+      titles.forEach((t) => {
+        if (t === needle) score = Math.max(score, 100);
+        else if (t.startsWith(needle)) score = Math.max(score, 70);
+        else if (t.includes(needle)) score = Math.max(score, 45);
+      });
+      score += Number(anime?.averageScore || 0) / 100;
+      return { anime, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  return scored[0]?.anime || rows[0] || null;
+}
+
+function restoreDefaultHeroFromHome() {
+  searchHeroToken += 1;
+  if (state.trending.length) {
+    setupBackgroundCycle(state.trending);
+  }
+}
+
+async function syncHeroWithSearch(rows, term) {
+  const normalizedTerm = normalizeSearchText(term);
+  if (!normalizedTerm || !Array.isArray(rows) || !rows.length) {
+    restoreDefaultHeroFromHome();
+    return;
+  }
+
+  const token = ++searchHeroToken;
+  stopHeroCycle();
+
+  const focusAnime = pickSearchFocusAnime(rows, normalizedTerm);
+  const immediateImage = String(focusAnime?.bannerImage || bestCover(focusAnime?.coverImage) || "").trim();
+  if (immediateImage) {
+    setHeroImage(immediateImage);
+  }
+
+  const prioritized = focusAnime ? [focusAnime, ...rows.filter((item) => item !== focusAnime)] : rows;
+  const candidates = await pickHeroImages(prioritized);
+  if (token !== searchHeroToken) return;
+
+  const heroImage = String(candidates[0] || immediateImage || "").trim();
+  if (heroImage) {
+    setHeroImage(heroImage);
+  }
+}
+
 function openAnimeTab(id, episode = 0) {
   const params = new URLSearchParams();
   params.set("id", String(id));
@@ -1075,27 +1155,59 @@ function openAnimeTab(id, episode = 0) {
 
 let searchTimer = null;
 let globalFilterTimer = null;
+let clearSearchTimer = null;
+
+function openSearchResults() {
+  if (!el.searchResults) return;
+  if (clearSearchTimer) {
+    clearTimeout(clearSearchTimer);
+    clearSearchTimer = null;
+  }
+  el.searchResults.classList.add("is-open");
+}
+
+function closeSearchResults(clear = false) {
+  if (!el.searchResults) return;
+  el.searchResults.classList.remove("is-open");
+  if (!clear) return;
+  if (clearSearchTimer) clearTimeout(clearSearchTimer);
+  clearSearchTimer = setTimeout(() => {
+    el.searchResults.innerHTML = "";
+  }, 170);
+}
+
+function renderSearchMessage(message) {
+  el.searchResults.innerHTML = `<p class="search-feedback">${esc(message)}</p>`;
+  openSearchResults();
+}
+
 function clearSearchResults() {
-  el.searchResults.innerHTML = "";
+  closeSearchResults(true);
 }
 
 async function runSearch() {
   const term = el.searchInput.value.trim();
   if (term.length < 2) {
     clearSearchResults();
+    restoreDefaultHeroFromHome();
     return;
   }
-  el.searchResults.innerHTML = "<p>Buscando...</p>";
+  renderSearchMessage("Buscando...");
   try {
     const data = await requestAniList(searchQuery, { search: term });
     let rows = data.Page?.media || [];
     rows = await enhanceSearchRowsImageQuality(rows);
-    el.searchResults.innerHTML = rows.length
-      ? rows.map(searchItemTemplate).join("")
-      : "<p>Sin resultados.</p>";
+    rows = rows.slice(0, 8);
+    el.searchResults.innerHTML = rows.length ? rows.map((row, idx) => searchItemTemplate(row, idx)).join("") : "";
+    await syncHeroWithSearch(rows, term);
+    if (!rows.length) {
+      renderSearchMessage("Sin resultados.");
+      return;
+    }
+    openSearchResults();
     lazyLoadImages();
   } catch {
-    el.searchResults.innerHTML = "<p>No se pudo buscar ahora.</p>";
+    renderSearchMessage("No se pudo buscar ahora.");
   }
 }
 
@@ -1150,6 +1262,9 @@ function bindEvents() {
   el.searchInput.addEventListener("input", () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(runSearch, 320);
+  });
+  el.searchInput.addEventListener("focus", () => {
+    if (el.searchResults.innerHTML.trim()) openSearchResults();
   });
   el.searchInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") runSearch();
