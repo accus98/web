@@ -13,7 +13,10 @@
       googleAuthEnabled: false,
       googleClientId: "",
       localAuthEnabled: true,
-      passwordMinLen: 6,
+      passwordMinLen: 8,
+      passwordRequiresLetter: true,
+      passwordRequiresNumber: true,
+      passwordPolicyMessage: "La contrasena debe tener al menos 8 caracteres, al menos una letra, al menos un numero.",
       passwordResetEnabled: true,
       emailVerificationEnabled: true
     },
@@ -104,6 +107,43 @@
     return Boolean(state.session?.authenticated);
   }
 
+  function getPasswordPolicyConfig() {
+    const minLenRaw = Number(state.config?.passwordMinLen || 8);
+    const minLen = Number.isFinite(minLenRaw) && minLenRaw >= 8 ? Math.floor(minLenRaw) : 8;
+    return {
+      minLen,
+      requiresLetter: state.config?.passwordRequiresLetter !== false,
+      requiresNumber: state.config?.passwordRequiresNumber !== false
+    };
+  }
+
+  function passwordPolicyMessage(label = "La contrasena") {
+    const cfg = getPasswordPolicyConfig();
+    const checks = [`al menos ${cfg.minLen} caracteres`];
+    if (cfg.requiresLetter) checks.push("al menos una letra");
+    if (cfg.requiresNumber) checks.push("al menos un numero");
+    return `${label} debe tener ${checks.join(", ")}.`;
+  }
+
+  function validatePasswordPolicy(password, label = "La contrasena") {
+    const value = String(password || "");
+    const cfg = getPasswordPolicyConfig();
+    if (value.length < cfg.minLen) return { ok: false, message: passwordPolicyMessage(label) };
+    if (cfg.requiresLetter && !/[A-Za-z]/.test(value)) return { ok: false, message: passwordPolicyMessage(label) };
+    if (cfg.requiresNumber && !/[0-9]/.test(value)) return { ok: false, message: passwordPolicyMessage(label) };
+    return { ok: true, message: "" };
+  }
+
+  function updatePasswordInputHint() {
+    if (!el.authPassword) return;
+    const cfg = getPasswordPolicyConfig();
+    let hint = `Minimo ${cfg.minLen} caracteres`;
+    if (cfg.requiresLetter && cfg.requiresNumber) hint += " (letra y numero)";
+    else if (cfg.requiresLetter) hint += " (con letra)";
+    else if (cfg.requiresNumber) hint += " (con numero)";
+    el.authPassword.placeholder = hint;
+  }
+
   function updateHeaderUI() {
     const authenticated = isAuthenticated();
     const userName = state.session?.user?.name || "";
@@ -155,6 +195,7 @@
   function setMode(mode) {
     state.mode = mode === "register" ? "register" : "login";
     const register = state.mode === "register";
+    updatePasswordInputHint();
 
     if (el.authModeLogin) el.authModeLogin.classList.toggle("active", !register);
     if (el.authModeRegister) el.authModeRegister.classList.toggle("active", register);
@@ -194,9 +235,12 @@
       return;
     }
 
-    if (state.mode === "register" && password.length < Number(state.config.passwordMinLen || 6)) {
-      setMessage(`La contrasena debe tener al menos ${state.config.passwordMinLen || 6} caracteres.`, "error");
-      return;
+    if (state.mode === "register") {
+      const policy = validatePasswordPolicy(password, "La contrasena");
+      if (!policy.ok) {
+        setMessage(policy.message, "error");
+        return;
+      }
     }
 
     setMessage("Validando cuenta...", "success");
@@ -332,7 +376,7 @@
                 <input id="authEmail" class="auth-input" type="email" placeholder="tu@email.com" autocomplete="email" required />
 
                 <label class="auth-label" for="authPassword">Contrasena</label>
-                <input id="authPassword" class="auth-input" type="password" placeholder="Minimo 6 caracteres" autocomplete="current-password" required />
+                <input id="authPassword" class="auth-input" type="password" placeholder="Minimo 8 caracteres (letra y numero)" autocomplete="current-password" required />
 
                 <div id="authNameGroup" hidden>
                   <label class="auth-label" for="authName">Nombre de perfil</label>
@@ -534,6 +578,7 @@
     if (el.authForgotBtn) el.authForgotBtn.hidden = authenticated || !state.config.passwordResetEnabled;
     if (el.authResendVerifyBtn) el.authResendVerifyBtn.hidden = authenticated || !state.config.emailVerificationEnabled;
     if (!authenticated) setMode("login");
+    updatePasswordInputHint();
 
     el.authModal.classList.add("open");
     el.authModal.setAttribute("aria-hidden", "false");
@@ -575,7 +620,10 @@
         googleAuthEnabled: false,
         googleClientId: "",
         localAuthEnabled: true,
-        passwordMinLen: 6,
+        passwordMinLen: 8,
+        passwordRequiresLetter: true,
+        passwordRequiresNumber: true,
+        passwordPolicyMessage: "La contrasena debe tener al menos 8 caracteres, al menos una letra, al menos un numero.",
         passwordResetEnabled: true,
         emailVerificationEnabled: true
       };

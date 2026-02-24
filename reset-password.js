@@ -7,8 +7,20 @@ const el = {
   resetMessage: document.getElementById("resetMessage")
 };
 
-const PASSWORD_MIN_LEN = 6;
+const PASSWORD_MIN_LEN = 8;
 const RESET_URL = "/api/auth/password/reset";
+
+function passwordPolicyMessage() {
+  return `La contrasena debe tener al menos ${PASSWORD_MIN_LEN} caracteres, una letra y un numero.`;
+}
+
+function isPasswordStrong(password) {
+  const value = String(password || "");
+  if (value.length < PASSWORD_MIN_LEN) return false;
+  if (!/[A-Za-z]/.test(value)) return false;
+  if (!/[0-9]/.test(value)) return false;
+  return true;
+}
 
 function setMessage(message = "", type = "") {
   if (!el.resetMessage) return;
@@ -48,8 +60,8 @@ async function handleSubmit(event, token) {
 
   const password = String(el.resetPassword?.value || "");
   const confirm = String(el.resetPasswordConfirm?.value || "");
-  if (password.length < PASSWORD_MIN_LEN) {
-    setMessage(`La contrasena debe tener al menos ${PASSWORD_MIN_LEN} caracteres.`, "error");
+  if (!isPasswordStrong(password)) {
+    setMessage(passwordPolicyMessage(), "error");
     return;
   }
   if (password !== confirm) {

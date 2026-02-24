@@ -34,10 +34,11 @@ function parseSetCookie(headerValue) {
   return raw.split(";")[0].trim();
 }
 
-async function postJson(baseUrl, route, body, cookie = "") {
+async function postJson(baseUrl, route, body, cookie = "", extraHeaders = {}) {
   const headers = {
     "Content-Type": "application/json",
-    Accept: "application/json"
+    Accept: "application/json",
+    ...extraHeaders
   };
   if (cookie) headers.Cookie = cookie;
   const res = await fetch(`${baseUrl}${route}`, {
@@ -237,6 +238,43 @@ test("reset invalida tokens anteriores del mismo usuario", async (t) => {
     password: "oldpass123"
   });
   assert.notEqual(loginOld.status, 200);
+});
+
+test("registro local rechaza contrasenas que no cumplen politica", async (t) => {
+  const fx = await startFixture(t);
+  const baseEmail = `policy+${Date.now()}`;
+
+  const onlyLetters = await postJson(fx.baseUrl, "/api/auth/register", {
+    email: `${baseEmail}-letters@example.com`,
+    password: "sololetras",
+    name: "Policy User"
+  });
+  assert.equal(onlyLetters.status, 400);
+  assert.match(String(onlyLetters.data?.error || ""), /contrasena/i);
+
+  const onlyNumbers = await postJson(fx.baseUrl, "/api/auth/register", {
+    email: `${baseEmail}-numbers@example.com`,
+    password: "12345678",
+    name: "Policy User"
+  });
+  assert.equal(onlyNumbers.status, 400);
+  assert.match(String(onlyNumbers.data?.error || ""), /contrasena/i);
+});
+
+test("bloquea peticiones API con origin cruzado en metodos stateful", async (t) => {
+  const fx = await startFixture(t);
+  const blocked = await postJson(
+    fx.baseUrl,
+    "/api/auth/logout",
+    {},
+    "",
+    {
+      Origin: "https://evil.example",
+      Referer: "https://evil.example/fake"
+    }
+  );
+  assert.equal(blocked.status, 403);
+  assert.match(String(blocked.data?.error || ""), /seguridad/i);
 });
 
 test("auditoria de seguridad escribe eventos de auth en archivo", async (t) => {

@@ -20,7 +20,19 @@ const el = {
   recommendedGrid: document.getElementById("profileRecommendedGrid")
 };
 
-const PASSWORD_MIN_LEN = 6;
+const PASSWORD_MIN_LEN = 8;
+
+function passwordPolicyMessage() {
+  return `La contrasena nueva debe tener al menos ${PASSWORD_MIN_LEN} caracteres, una letra y un numero.`;
+}
+
+function isPasswordStrong(password) {
+  const value = String(password || "");
+  if (value.length < PASSWORD_MIN_LEN) return false;
+  if (!/[A-Za-z]/.test(value)) return false;
+  if (!/[0-9]/.test(value)) return false;
+  return true;
+}
 
 const state = {
   session: { authenticated: false },
@@ -434,8 +446,8 @@ async function changePassword() {
     setSecurityMessage("Introduce tu contrasena actual.", "error");
     return;
   }
-  if (newPassword.length < PASSWORD_MIN_LEN) {
-    setSecurityMessage(`La contrasena nueva debe tener al menos ${PASSWORD_MIN_LEN} caracteres.`, "error");
+  if (!isPasswordStrong(newPassword)) {
+    setSecurityMessage(passwordPolicyMessage(), "error");
     return;
   }
   if (newPassword !== confirmPassword) {

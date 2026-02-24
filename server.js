@@ -58,15 +58,33 @@ const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || "").trim();
 const SESSION_SECRET = String(process.env.SESSION_SECRET || DEFAULT_SESSION_SECRET).trim();
 const SESSION_COOKIE = "yv_sid";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const PASSWORD_MIN_LEN = 6;
+const PASSWORD_MIN_LEN_RAW = Number(process.env.PASSWORD_MIN_LEN || 8);
+const PASSWORD_MIN_LEN =
+  Number.isFinite(PASSWORD_MIN_LEN_RAW) && PASSWORD_MIN_LEN_RAW >= 8 ? Math.floor(PASSWORD_MIN_LEN_RAW) : 8;
+const PASSWORD_REQUIRE_LETTER = true;
+const PASSWORD_REQUIRE_NUMBER = true;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const AUTH_RATE_WINDOW_MS = 10 * 60 * 1000;
 const AUTH_RATE_MAX_ATTEMPTS = 8;
 const AUTH_RATE_LOCK_MS = 15 * 60 * 1000;
+const AUTH_RATE_MAX_LOCK_MS = 12 * 60 * 60 * 1000;
 const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
 const PASSWORD_RESET_MAX_ACTIVE_PER_USER = 5;
 const EMAIL_VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
 const EMAIL_VERIFY_MAX_ACTIVE_PER_USER = 5;
+
+const SESSION_COOKIE_SAMESITE_INPUT = String(process.env.SESSION_COOKIE_SAMESITE || "Lax")
+  .trim()
+  .toLowerCase();
+const SESSION_COOKIE_SAMESITE =
+  SESSION_COOKIE_SAMESITE_INPUT === "strict"
+    ? "Strict"
+    : SESSION_COOKIE_SAMESITE_INPUT === "none"
+      ? "None"
+      : "Lax";
+const SESSION_COOKIE_SECURE_MODE = String(process.env.SESSION_COOKIE_SECURE || "auto")
+  .trim()
+  .toLowerCase();
 
 const APP_BASE_URL = String(process.env.APP_BASE_URL || "").trim();
 const SMTP_HOST = String(process.env.SMTP_HOST || "").trim();
@@ -405,16 +423,25 @@ function signSessionId(sessionId) {
   return crypto.createHmac("sha256", SESSION_SECRET).update(sessionId).digest("base64url");
 }
 
+function shouldUseSecureSessionCookie() {
+  if (SESSION_COOKIE_SECURE_MODE === "always") return true;
+  if (SESSION_COOKIE_SECURE_MODE === "never") return false;
+  return process.env.NODE_ENV === "production" || SESSION_COOKIE_SAMESITE === "None";
+}
+
+function sessionCookieBase(maxAgeSec) {
+  const secure = shouldUseSecureSessionCookie() ? "; Secure" : "";
+  return `Path=/; HttpOnly; SameSite=${SESSION_COOKIE_SAMESITE}; Max-Age=${maxAgeSec}${secure}`;
+}
+
 function setSessionCookie(res, sessionId) {
   const token = `${sessionId}.${signSessionId(sessionId)}`;
   const maxAgeSec = Math.floor(SESSION_TTL_MS / 1000);
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${secure}`);
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=${encodeURIComponent(token)}; ${sessionCookieBase(maxAgeSec)}`);
 }
 
 function clearSessionCookie(res) {
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; ${sessionCookieBase(0)}`);
 }
 
 function defaultSessionStore() {
@@ -610,7 +637,14 @@ function checkAuthRateLimit(req, scope, identifier = "") {
     return { allowed: false, retryAfterSec };
   }
 
-  if (entry.windowStart + AUTH_RATE_WINDOW_MS <= ts) {
+  if (entry.lockedUntil && entry.lockedUntil <= ts) {
+    entry.lockedUntil = 0;
+    entry.attempts = 0;
+    entry.windowStart = ts;
+    AUTH_RATE.set(key, entry);
+  }
+
+  if (entry.windowStart + AUTH_RATE_WINDOW_MS <= ts && !entry.lockedUntil) {
     AUTH_RATE.delete(key);
     return { allowed: true, retryAfterSec: 0 };
   }
@@ -622,12 +656,23 @@ function registerAuthFailure(req, scope, identifier = "") {
   const key = authRateKey(req, scope, identifier);
   const ts = now();
   let entry = AUTH_RATE.get(key);
-  if (!entry || entry.windowStart + AUTH_RATE_WINDOW_MS <= ts) {
-    entry = { attempts: 0, windowStart: ts, lockedUntil: 0 };
+  if (!entry) {
+    entry = { attempts: 0, windowStart: ts, lockedUntil: 0, lockCount: 0, lastFailedAt: ts };
+  } else if (!entry.lockedUntil && entry.windowStart + AUTH_RATE_WINDOW_MS <= ts) {
+    entry = { attempts: 0, windowStart: ts, lockedUntil: 0, lockCount: 0, lastFailedAt: ts };
+  } else if (!Number.isFinite(entry.lockCount) || entry.lockCount < 0) {
+    entry.lockCount = 0;
   }
+
   entry.attempts += 1;
+  entry.lastFailedAt = ts;
   if (entry.attempts >= AUTH_RATE_MAX_ATTEMPTS) {
-    entry.lockedUntil = ts + AUTH_RATE_LOCK_MS;
+    entry.lockCount = Math.min(20, Number(entry.lockCount || 0) + 1);
+    const lockMultiplier = Math.pow(2, Math.max(0, entry.lockCount - 1));
+    const lockMs = Math.min(AUTH_RATE_MAX_LOCK_MS, AUTH_RATE_LOCK_MS * lockMultiplier);
+    entry.lockedUntil = ts + lockMs;
+    entry.attempts = 0;
+    entry.windowStart = ts;
   }
   AUTH_RATE.set(key, entry);
 }
@@ -635,6 +680,26 @@ function registerAuthFailure(req, scope, identifier = "") {
 function registerAuthSuccess(req, scope, identifier = "") {
   const key = authRateKey(req, scope, identifier);
   if (AUTH_RATE.has(key)) AUTH_RATE.delete(key);
+}
+
+function pruneAuthRateMap() {
+  const ts = now();
+  const staleTtlMs = Math.max(AUTH_RATE_MAX_LOCK_MS, AUTH_RATE_WINDOW_MS * 2);
+  for (const [key, entry] of AUTH_RATE.entries()) {
+    if (!entry || typeof entry !== "object") {
+      AUTH_RATE.delete(key);
+      continue;
+    }
+    const lockActive = Number(entry.lockedUntil || 0) > ts;
+    const touchedAt = Math.max(
+      Number(entry.lastFailedAt || 0),
+      Number(entry.windowStart || 0),
+      Number(entry.lockedUntil || 0)
+    );
+    if (!lockActive && (!Number.isFinite(touchedAt) || touchedAt + staleTtlMs <= ts)) {
+      AUTH_RATE.delete(key);
+    }
+  }
 }
 
 function sendRateLimited(res, retryAfterSec) {
@@ -649,6 +714,100 @@ function sendRateLimited(res, retryAfterSec) {
       "Retry-After": String(retryAfterSec)
     }
   );
+}
+
+function getPasswordPolicyMessage(label = "La contrasena") {
+  const checks = [`al menos ${PASSWORD_MIN_LEN} caracteres`];
+  if (PASSWORD_REQUIRE_LETTER) checks.push("al menos una letra");
+  if (PASSWORD_REQUIRE_NUMBER) checks.push("al menos un numero");
+  return `${label} debe tener ${checks.join(", ")}.`;
+}
+
+function validatePasswordStrength(password, label = "La contrasena") {
+  const safePassword = String(password || "");
+  if (safePassword.length < PASSWORD_MIN_LEN) {
+    return { ok: false, error: getPasswordPolicyMessage(label), reason: "min_len" };
+  }
+  if (PASSWORD_REQUIRE_LETTER && !/[A-Za-z]/.test(safePassword)) {
+    return { ok: false, error: getPasswordPolicyMessage(label), reason: "missing_letter" };
+  }
+  if (PASSWORD_REQUIRE_NUMBER && !/[0-9]/.test(safePassword)) {
+    return { ok: false, error: getPasswordPolicyMessage(label), reason: "missing_number" };
+  }
+  return { ok: true, error: "", reason: "" };
+}
+
+const STATEFUL_HTTP_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function normalizeOrigin(rawValue) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    return `${url.protocol}//${url.host}`.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function requestOriginFromHeaders(req) {
+  const origin = normalizeOrigin(req?.headers?.origin || "");
+  if (origin) return origin;
+  return normalizeOrigin(req?.headers?.referer || "");
+}
+
+function expectedOrigin(req) {
+  const host = cleanText(req?.headers?.host || "").toLowerCase();
+  if (!host) return "";
+  const xfpRaw = String(req?.headers?.["x-forwarded-proto"] || "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  const proto = xfpRaw === "https" ? "https:" : "http:";
+  return `${proto}//${host}`;
+}
+
+function isApiStateChangingRequest(req, parsedUrl) {
+  const method = String(req?.method || "").toUpperCase();
+  if (!STATEFUL_HTTP_METHODS.has(method)) return false;
+  const pathname = String(parsedUrl?.pathname || "");
+  return pathname.startsWith("/api/");
+}
+
+function enforceApiOriginPolicy(req, res, parsedUrl) {
+  if (!isApiStateChangingRequest(req, parsedUrl)) return true;
+
+  const actualOrigin = requestOriginFromHeaders(req);
+  const allowedOrigin = expectedOrigin(req);
+  if (!allowedOrigin) return true;
+
+  if (!actualOrigin) {
+    if (process.env.NODE_ENV === "production") {
+      writeSecurityEvent("csrf_blocked", req, {
+        reason: "missing_origin",
+        path: securityValue(parsedUrl?.pathname || "", 120),
+        method: securityValue(req?.method || "", 12),
+        expectedOrigin: securityValue(allowedOrigin, 120)
+      });
+      sendJson(res, 403, { error: "Solicitud bloqueada por seguridad" });
+      return false;
+    }
+    return true;
+  }
+
+  if (actualOrigin !== allowedOrigin) {
+    writeSecurityEvent("csrf_blocked", req, {
+      reason: "origin_mismatch",
+      path: securityValue(parsedUrl?.pathname || "", 120),
+      method: securityValue(req?.method || "", 12),
+      origin: securityValue(actualOrigin, 120),
+      expectedOrigin: securityValue(allowedOrigin, 120)
+    });
+    sendJson(res, 403, { error: "Solicitud bloqueada por seguridad" });
+    return false;
+  }
+
+  return true;
 }
 
 function securityValue(input, max = 180) {
@@ -673,6 +832,17 @@ function validateSessionSecret() {
   const weakSecret = !SESSION_SECRET || SESSION_SECRET === DEFAULT_SESSION_SECRET || SESSION_SECRET.length < 24;
   if (!weakSecret) return;
   const message = "SESSION_SECRET es debil. Usa una clave aleatoria larga (minimo 24 caracteres).";
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(message);
+  }
+  console.warn(`Aviso: ${message}`);
+}
+
+function validateSessionCookieConfig() {
+  if (SESSION_COOKIE_SAMESITE !== "None") return;
+  if (shouldUseSecureSessionCookie()) return;
+
+  const message = "SESSION_COOKIE_SAMESITE=None requiere cookie Secure activa.";
   if (process.env.NODE_ENV === "production") {
     throw new Error(message);
   }
@@ -1367,8 +1537,9 @@ function upsertLocalUser({ email, password, name }) {
   }
 
   const safePassword = String(password || "");
-  if (safePassword.length < PASSWORD_MIN_LEN) {
-    throw new Error(`La contrasena debe tener al menos ${PASSWORD_MIN_LEN} caracteres`);
+  const policy = validatePasswordStrength(safePassword, "La contrasena");
+  if (!policy.ok) {
+    throw new Error(policy.error);
   }
 
   const displayName = normalizeDisplayName(name || normalizedEmail.split("@")[0]);
@@ -1430,8 +1601,9 @@ function loginLocalUser({ email, password }) {
 
 function setOrUpdateLocalPassword(user, nextPassword) {
   const safePassword = String(nextPassword || "");
-  if (safePassword.length < PASSWORD_MIN_LEN) {
-    throw new Error(`La contrasena debe tener al menos ${PASSWORD_MIN_LEN} caracteres`);
+  const policy = validatePasswordStrength(safePassword, "La contrasena");
+  if (!policy.ok) {
+    throw new Error(policy.error);
   }
   const pack = hashPassword(safePassword);
   user.localAuth = {
@@ -1690,6 +1862,9 @@ async function handleConfig(req, res) {
     googleClientId: GOOGLE_CLIENT_ID || "",
     localAuthEnabled: true,
     passwordMinLen: PASSWORD_MIN_LEN,
+    passwordRequiresLetter: PASSWORD_REQUIRE_LETTER,
+    passwordRequiresNumber: PASSWORD_REQUIRE_NUMBER,
+    passwordPolicyMessage: getPasswordPolicyMessage("La contrasena"),
     passwordResetEnabled: isPasswordResetAvailable(),
     emailVerificationEnabled: true
   });
@@ -1812,11 +1987,15 @@ async function handleAuthRegister(req, res) {
     sendJson(res, 400, { error: "Correo invalido" });
     return;
   }
-  if (password.length < PASSWORD_MIN_LEN) {
+  const passwordPolicy = validatePasswordStrength(password, "La contrasena");
+  if (!passwordPolicy.ok) {
     registerAuthFailure(req, "register");
     registerAuthFailure(req, "register", email);
-    writeSecurityEvent("auth_register_failed", req, { reason: "weak_password", email: securityValue(email, 120) });
-    sendJson(res, 400, { error: `La contrasena debe tener al menos ${PASSWORD_MIN_LEN} caracteres` });
+    writeSecurityEvent("auth_register_failed", req, {
+      reason: passwordPolicy.reason || "weak_password",
+      email: securityValue(email, 120)
+    });
+    sendJson(res, 400, { error: passwordPolicy.error || getPasswordPolicyMessage("La contrasena") });
     return;
   }
 
@@ -2162,10 +2341,11 @@ async function handleAuthPasswordReset(req, res) {
     sendJson(res, 400, { error: "Falta token de restablecimiento" });
     return;
   }
-  if (newPassword.length < PASSWORD_MIN_LEN) {
+  const resetPolicy = validatePasswordStrength(newPassword, "La contrasena");
+  if (!resetPolicy.ok) {
     registerAuthFailure(req, "password_reset");
-    writeSecurityEvent("auth_password_reset_failed", req, { reason: "weak_password" });
-    sendJson(res, 400, { error: `La contrasena debe tener al menos ${PASSWORD_MIN_LEN} caracteres` });
+    writeSecurityEvent("auth_password_reset_failed", req, { reason: resetPolicy.reason || "weak_password" });
+    sendJson(res, 400, { error: resetPolicy.error || getPasswordPolicyMessage("La contrasena") });
     return;
   }
 
@@ -2241,11 +2421,15 @@ async function handleAuthPasswordChange(req, res) {
   const currentPassword = String(body?.currentPassword || "");
   const newPassword = String(body?.newPassword || "");
 
-  if (newPassword.length < PASSWORD_MIN_LEN) {
+  const changePolicy = validatePasswordStrength(newPassword, "La contrasena nueva");
+  if (!changePolicy.ok) {
     registerAuthFailure(req, "password");
     registerAuthFailure(req, "password", auth.user.id);
-    writeSecurityEvent("auth_password_change_failed", req, { reason: "weak_password", userId: auth.user.id });
-    sendJson(res, 400, { error: `La contrasena nueva debe tener al menos ${PASSWORD_MIN_LEN} caracteres` });
+    writeSecurityEvent("auth_password_change_failed", req, {
+      reason: changePolicy.reason || "weak_password",
+      userId: auth.user.id
+    });
+    sendJson(res, 400, { error: changePolicy.error || getPasswordPolicyMessage("La contrasena nueva") });
     return;
   }
   if (currentPassword && currentPassword === newPassword) {
@@ -2766,11 +2950,13 @@ function serveStatic(res, parsedUrl) {
 let DB = loadDatabase();
 loadSessionStore();
 validateSessionSecret();
+validateSessionCookieConfig();
 cleanupPasswordResetTokens();
 cleanupEmailVerifyTokens();
 
 setInterval(() => {
   pruneExpiredSessions();
+  pruneAuthRateMap();
   cleanupPasswordResetTokens();
   cleanupEmailVerifyTokens();
 }, 5 * 60 * 1000).unref();
@@ -2778,6 +2964,9 @@ setInterval(() => {
 const server = http.createServer(async (req, res) => {
   try {
     const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
+    if (!enforceApiOriginPolicy(req, res, parsedUrl)) {
+      return;
+    }
 
     if (parsedUrl.pathname === "/api/health") {
       sendJson(res, 200, {
