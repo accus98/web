@@ -4,6 +4,8 @@
   const GOOGLE_LOGIN_URL = "/api/auth/google";
   const LOCAL_LOGIN_URL = "/api/auth/login";
   const LOCAL_REGISTER_URL = "/api/auth/register";
+  const EMAIL_RESEND_URL = "/api/auth/email/resend";
+  const PASSWORD_FORGOT_URL = "/api/auth/password/forgot";
   const LOGOUT_URL = "/api/auth/logout";
 
   const state = {
@@ -11,7 +13,9 @@
       googleAuthEnabled: false,
       googleClientId: "",
       localAuthEnabled: true,
-      passwordMinLen: 6
+      passwordMinLen: 6,
+      passwordResetEnabled: true,
+      emailVerificationEnabled: true
     },
     session: { authenticated: false },
     listeners: [],
@@ -43,6 +47,8 @@
     authNameGroup: null,
     authName: null,
     authSubmit: null,
+    authForgotBtn: null,
+    authResendVerifyBtn: null,
     authGoogleSection: null,
     authGoogleWrap: null,
     authHelper: null
@@ -71,14 +77,25 @@
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(String(data?.error || `HTTP ${response.status}`));
+      let message = String(data?.error || `HTTP ${response.status}`);
+      if (response.status === 429 && Number(data?.retryAfterSec || 0) > 0) {
+        message = `${message} Reintenta en ${Number(data.retryAfterSec)}s.`;
+      }
+      const error = new Error(message);
+      error.status = response.status;
+      error.data = data;
+      throw error;
     }
     return data;
   }
 
-  function setMessage(message = "", type = "") {
+  function setMessage(message = "", type = "", asHtml = false) {
     if (!el.authMessage) return;
-    el.authMessage.textContent = String(message || "");
+    if (asHtml) {
+      el.authMessage.innerHTML = String(message || "");
+    } else {
+      el.authMessage.textContent = String(message || "");
+    }
     el.authMessage.className = "auth-message";
     if (type) el.authMessage.classList.add(type);
   }
@@ -143,6 +160,14 @@
     if (el.authModeRegister) el.authModeRegister.classList.toggle("active", register);
     if (el.authNameGroup) el.authNameGroup.hidden = !register;
     if (el.authSubmit) el.authSubmit.textContent = register ? "Crear cuenta" : "Acceder";
+    if (el.authForgotBtn) {
+      const canShow = !register && !isAuthenticated() && Boolean(state.config?.passwordResetEnabled);
+      el.authForgotBtn.hidden = !canShow;
+    }
+    if (el.authResendVerifyBtn) {
+      const canShow = !register && !isAuthenticated() && Boolean(state.config?.emailVerificationEnabled);
+      el.authResendVerifyBtn.hidden = !canShow;
+    }
   }
 
   async function handleLocalSubmit(event) {
@@ -178,19 +203,94 @@
     try {
       const endpoint = state.mode === "register" ? LOCAL_REGISTER_URL : LOCAL_LOGIN_URL;
       const payload = state.mode === "register" ? { email, password, name } : { email, password };
-      await request(endpoint, {
+      const result = await request(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify(payload)
       });
+
+      if (state.mode === "register" && result?.requiresEmailVerification) {
+        setMode("login");
+        setMessage(result.message || "Cuenta creada. Revisa tu correo para verificarla.", "success");
+        if (el.authPassword) el.authPassword.value = "";
+        return;
+      }
+
       await refreshSession();
       closeAuthModal();
       setMessage("");
       if (el.authPassword) el.authPassword.value = "";
     } catch (error) {
+      if (error?.status === 403 && error?.data?.needsEmailVerification) {
+        setMode("login");
+      }
       setMessage(error.message || "No se pudo completar la autenticacion.", "error");
+    }
+  }
+
+  async function handleForgotPassword() {
+    if (isAuthenticated()) return;
+    if (!state.config?.passwordResetEnabled) {
+      setMessage("Recuperacion de contrasena no disponible.", "error");
+      return;
+    }
+    const email = String(el.authEmail?.value || "")
+      .trim()
+      .toLowerCase();
+    if (!email) {
+      setMessage("Escribe tu correo para enviar el enlace de recuperacion.", "error");
+      return;
+    }
+
+    setMessage("Enviando enlace de recuperacion...", "success");
+    try {
+      await request(PASSWORD_FORGOT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ email })
+      });
+      const guideUrl = `password-recovery-sent.html?email=${encodeURIComponent(email)}`;
+      setMessage(
+        `Si el correo existe, enviamos un enlace de recuperacion. <a class="auth-inline-link" href="${guideUrl}">Ver instrucciones</a>`,
+        "success",
+        true
+      );
+    } catch (error) {
+      setMessage(error.message || "No se pudo procesar la solicitud.", "error");
+    }
+  }
+
+  async function handleResendVerification() {
+    if (isAuthenticated()) return;
+    if (!state.config?.emailVerificationEnabled) {
+      setMessage("Verificacion de correo no disponible.", "error");
+      return;
+    }
+
+    const email = String(el.authEmail?.value || "")
+      .trim()
+      .toLowerCase();
+    if (!email) {
+      setMessage("Escribe tu correo para reenviar la verificacion.", "error");
+      return;
+    }
+
+    setMessage("Enviando verificacion...", "success");
+    try {
+      await request(EMAIL_RESEND_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ email })
+      });
+      setMessage("Si la cuenta existe y esta pendiente, enviamos el enlace de verificacion.", "success");
+    } catch (error) {
+      setMessage(error.message || "No se pudo reenviar la verificacion.", "error");
     }
   }
 
@@ -240,6 +340,8 @@
                 </div>
 
                 <button id="authSubmit" class="btn btn-primary" type="submit">Acceder</button>
+                <button id="authForgotBtn" class="auth-forgot-btn" type="button">Olvide mi contrasena</button>
+                <button id="authResendVerifyBtn" class="auth-forgot-btn" type="button">Reenviar verificacion</button>
               </form>
 
               <section id="authGoogleSection" class="auth-google-section">
@@ -276,6 +378,8 @@
     el.authNameGroup = byId("authNameGroup");
     el.authName = byId("authName");
     el.authSubmit = byId("authSubmit");
+    el.authForgotBtn = byId("authForgotBtn");
+    el.authResendVerifyBtn = byId("authResendVerifyBtn");
     el.authGoogleSection = byId("authGoogleSection");
     el.authGoogleWrap = byId("authGoogleWrap");
     el.authHelper = byId("authGoogleHelp");
@@ -308,6 +412,12 @@
     }
     if (el.authForm) {
       el.authForm.addEventListener("submit", handleLocalSubmit);
+    }
+    if (el.authForgotBtn) {
+      el.authForgotBtn.addEventListener("click", handleForgotPassword);
+    }
+    if (el.authResendVerifyBtn) {
+      el.authResendVerifyBtn.addEventListener("click", handleResendVerification);
     }
 
     window.addEventListener("keydown", (event) => {
@@ -388,14 +498,17 @@
       }
 
       el.authGoogleWrap.innerHTML = "";
+      const buttonWidth = Math.max(220, Math.min(320, Math.floor((el.authGoogleWrap.clientWidth || 320) - 8)));
       window.google.accounts.id.renderButton(el.authGoogleWrap, {
         theme: "outline",
         size: "large",
         shape: "pill",
         text: "continue_with",
-        logo_alignment: "left",
-        width: 300
+        logo_alignment: "center",
+        width: buttonWidth
       });
+      const gsiHolder = el.authGoogleWrap.querySelector("div");
+      if (gsiHolder) gsiHolder.style.margin = "0 auto";
       el.authHelper.textContent = "Google conecta o crea tu cuenta automaticamente.";
     } catch (error) {
       el.authGoogleWrap.innerHTML = "";
@@ -418,6 +531,8 @@
 
     if (el.authMode) el.authMode.hidden = authenticated || !state.config.localAuthEnabled;
     if (el.authForm) el.authForm.hidden = authenticated || !state.config.localAuthEnabled;
+    if (el.authForgotBtn) el.authForgotBtn.hidden = authenticated || !state.config.passwordResetEnabled;
+    if (el.authResendVerifyBtn) el.authResendVerifyBtn.hidden = authenticated || !state.config.emailVerificationEnabled;
     if (!authenticated) setMode("login");
 
     el.authModal.classList.add("open");
@@ -460,7 +575,9 @@
         googleAuthEnabled: false,
         googleClientId: "",
         localAuthEnabled: true,
-        passwordMinLen: 6
+        passwordMinLen: 6,
+        passwordResetEnabled: true,
+        emailVerificationEnabled: true
       };
     }
     return state.config;

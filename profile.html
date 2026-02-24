@@ -55,6 +55,29 @@
 
     <section class="section">
       <div class="section-head">
+        <h2>Seguridad de cuenta</h2>
+        <p>Gestiona tu acceso con correo y contrasena.</p>
+      </div>
+      <div class="security-box glass">
+        <p id="securityHint" class="empty-note">Inicia sesion para gestionar tu contrasena.</p>
+        <form id="passwordForm" class="security-form">
+          <label id="currentPasswordLabel" class="auth-label" for="currentPassword">Contrasena actual</label>
+          <input id="currentPassword" class="auth-input" type="password" autocomplete="current-password" />
+          <label class="auth-label" for="newPassword">Contrasena nueva</label>
+          <input id="newPassword" class="auth-input" type="password" autocomplete="new-password" />
+          <label class="auth-label" for="confirmPassword">Confirmar contrasena nueva</label>
+          <input id="confirmPassword" class="auth-input" type="password" autocomplete="new-password" />
+          <button class="btn btn-primary" type="submit">Guardar contrasena</button>
+        </form>
+        <div class="security-actions">
+          <button id="revokeOthersBtn" class="btn btn-ghost" type="button" hidden>Cerrar otras sesiones</button>
+        </div>
+        <p id="securityMessage" class="auth-message"></p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
         <h2>Continuar viendo</h2>
         <button id="clearHistoryBtn" class="mini-action" type="button">Limpiar historial</button>
       </div>

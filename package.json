@@ -4,9 +4,11 @@
   "version": "1.0.0",
   "description": "YumeVerse anime web con proxy backend y cache",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test:auth": "node --test tests/auth.e2e.test.js"
   },
   "dependencies": {
-    "google-auth-library": "^9.15.1"
+    "google-auth-library": "^9.15.1",
+    "nodemailer": "^8.0.1"
   }
 }

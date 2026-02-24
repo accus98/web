@@ -5,12 +5,22 @@ const el = {
   profileGate: document.getElementById("profileGate"),
   profileGateBtn: document.getElementById("profileGateBtn"),
   profileLogoutBtn: document.getElementById("profileLogoutBtn"),
+  securityHint: document.getElementById("securityHint"),
+  securityMessage: document.getElementById("securityMessage"),
+  passwordForm: document.getElementById("passwordForm"),
+  revokeOthersBtn: document.getElementById("revokeOthersBtn"),
+  currentPasswordLabel: document.getElementById("currentPasswordLabel"),
+  currentPassword: document.getElementById("currentPassword"),
+  newPassword: document.getElementById("newPassword"),
+  confirmPassword: document.getElementById("confirmPassword"),
   clearHistoryBtn: document.getElementById("clearHistoryBtn"),
   historyGrid: document.getElementById("profileHistoryGrid"),
   favoritesGrid: document.getElementById("profileFavoritesGrid"),
   pendingGrid: document.getElementById("profilePendingGrid"),
   recommendedGrid: document.getElementById("profileRecommendedGrid")
 };
+
+const PASSWORD_MIN_LEN = 6;
 
 const state = {
   session: { authenticated: false },
@@ -57,6 +67,11 @@ async function request(url, options = {}) {
 
 function isAuthenticated() {
   return Boolean(state.session?.authenticated);
+}
+
+function hasLocalProvider() {
+  const providers = Array.isArray(state.session?.user?.authProviders) ? state.session.user.authProviders : [];
+  return providers.includes("local");
 }
 
 function emptyTemplate(message) {
@@ -163,6 +178,86 @@ function renderGate() {
   el.profileGate.hidden = !open;
 }
 
+function setSecurityMessage(message = "", type = "") {
+  if (!el.securityMessage) return;
+  el.securityMessage.textContent = String(message || "");
+  el.securityMessage.className = "auth-message";
+  if (type) el.securityMessage.classList.add(type);
+}
+
+function renderSecurity() {
+  if (!el.passwordForm || !el.securityHint) return;
+
+  const authenticated = isAuthenticated();
+  const hasLocal = hasLocalProvider();
+  const submit = el.passwordForm.querySelector("button[type='submit']");
+  if (el.revokeOthersBtn) el.revokeOthersBtn.hidden = !authenticated;
+
+  if (!authenticated) {
+    el.securityHint.textContent = "Inicia sesion para gestionar tu contrasena.";
+    if (el.currentPasswordLabel) el.currentPasswordLabel.hidden = false;
+    if (el.currentPassword) {
+      el.currentPassword.hidden = false;
+      el.currentPassword.required = false;
+    }
+    if (submit) submit.textContent = "Guardar contrasena";
+    [el.currentPassword, el.newPassword, el.confirmPassword].forEach((input) => {
+      if (input) {
+        input.disabled = true;
+        input.value = "";
+      }
+    });
+    if (submit) submit.disabled = true;
+    setSecurityMessage("");
+    return;
+  }
+
+  [el.currentPassword, el.newPassword, el.confirmPassword].forEach((input) => {
+    if (input) input.disabled = false;
+  });
+  if (submit) submit.disabled = false;
+
+  if (hasLocal) {
+    el.securityHint.textContent = "Cambia tu contrasena de acceso por correo.";
+    if (el.currentPasswordLabel) el.currentPasswordLabel.hidden = false;
+    if (el.currentPassword) {
+      el.currentPassword.hidden = false;
+      el.currentPassword.required = true;
+    }
+    if (submit) submit.textContent = "Cambiar contrasena";
+  } else {
+    el.securityHint.textContent = "Tu cuenta usa Google. Define una contrasena para acceder tambien con correo.";
+    if (el.currentPasswordLabel) el.currentPasswordLabel.hidden = true;
+    if (el.currentPassword) {
+      el.currentPassword.hidden = true;
+      el.currentPassword.required = false;
+      el.currentPassword.value = "";
+    }
+    if (submit) submit.textContent = "Definir contrasena";
+  }
+}
+
+async function revokeOtherSessions() {
+  if (!window.YVAuth.requireAuth("Necesitas iniciar sesion para gestionar tu seguridad.")) return;
+  setSecurityMessage("Cerrando sesiones en otros dispositivos...", "success");
+  if (el.revokeOthersBtn) el.revokeOthersBtn.disabled = true;
+  try {
+    const result = await request("/api/auth/sessions/revoke-others", {
+      method: "POST"
+    });
+    const removed = Math.max(0, Number(result?.removed || 0));
+    if (removed > 0) {
+      setSecurityMessage(`Se cerraron ${removed} sesiones activas.`, "success");
+    } else {
+      setSecurityMessage("No habia otras sesiones activas.", "success");
+    }
+  } catch (error) {
+    setSecurityMessage(error.message || "No se pudieron cerrar las otras sesiones.", "error");
+  } finally {
+    if (el.revokeOthersBtn) el.revokeOthersBtn.disabled = false;
+  }
+}
+
 function renderHistory() {
   if (!isAuthenticated()) {
     el.historyGrid.innerHTML = emptyTemplate("Inicia sesion para ver tu historial.");
@@ -225,6 +320,7 @@ function renderRecommended() {
 function renderAll() {
   renderHeader();
   renderGate();
+  renderSecurity();
   renderHistory();
   renderFavorites();
   renderPending();
@@ -326,6 +422,49 @@ async function clearHistory() {
   await refresh();
 }
 
+async function changePassword() {
+  if (!window.YVAuth.requireAuth("Necesitas iniciar sesion para gestionar tu contrasena.")) return;
+
+  const currentPassword = String(el.currentPassword?.value || "");
+  const newPassword = String(el.newPassword?.value || "");
+  const confirmPassword = String(el.confirmPassword?.value || "");
+  const hasLocal = hasLocalProvider();
+
+  if (hasLocal && !currentPassword) {
+    setSecurityMessage("Introduce tu contrasena actual.", "error");
+    return;
+  }
+  if (newPassword.length < PASSWORD_MIN_LEN) {
+    setSecurityMessage(`La contrasena nueva debe tener al menos ${PASSWORD_MIN_LEN} caracteres.`, "error");
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    setSecurityMessage("La confirmacion no coincide.", "error");
+    return;
+  }
+
+  setSecurityMessage("Guardando contrasena...", "success");
+  try {
+    await request("/api/auth/password/change", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        currentPassword,
+        newPassword
+      })
+    });
+    [el.currentPassword, el.newPassword, el.confirmPassword].forEach((input) => {
+      if (input) input.value = "";
+    });
+    setSecurityMessage("Contrasena actualizada correctamente.", "success");
+    await window.YVAuth.refreshSession();
+  } catch (error) {
+    setSecurityMessage(error.message || "No se pudo actualizar la contrasena.", "error");
+  }
+}
+
 async function refresh() {
   try {
     await Promise.all([loadProfile(), loadRecommendations()]);
@@ -337,6 +476,19 @@ function bindEvents() {
   el.profileGateBtn.addEventListener("click", () => {
     window.YVAuth.openAuthModal();
   });
+
+  if (el.passwordForm) {
+    el.passwordForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await changePassword();
+    });
+  }
+
+  if (el.revokeOthersBtn) {
+    el.revokeOthersBtn.addEventListener("click", async () => {
+      await revokeOtherSessions();
+    });
+  }
 
   el.clearHistoryBtn.addEventListener("click", async () => {
     if (!window.YVAuth.requireAuth("Necesitas iniciar sesion para limpiar historial.")) return;

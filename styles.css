@@ -951,6 +951,22 @@ a {
   min-height: 42px;
 }
 
+.auth-forgot-btn {
+  margin-top: 2px;
+  width: fit-content;
+  border: 0;
+  background: transparent;
+  color: #9fc0ea;
+  padding: 2px 0;
+  font: inherit;
+  font-size: 0.84rem;
+  cursor: pointer;
+}
+
+.auth-forgot-btn:hover {
+  color: #ffd5b7;
+}
+
 .auth-google-section {
   display: grid;
   gap: 8px;
@@ -974,14 +990,30 @@ a {
 
 .auth-google-wrap {
   min-height: 44px;
-  display: grid;
+  display: flex;
   align-items: center;
-  justify-items: start;
+  justify-content: center;
+  width: 100%;
+}
+
+.auth-google-wrap > div,
+.auth-google-wrap iframe {
+  margin: 0 auto !important;
 }
 
 .auth-helper {
   min-height: 20px;
   font-size: 0.88rem;
+  text-align: center;
+}
+
+.auth-inline-link {
+  color: #9fd7ff;
+  text-decoration: underline;
+}
+
+.auth-inline-link:hover {
+  color: #d5ecff;
 }
 
 .auth-actions {
@@ -1162,6 +1194,30 @@ a {
 .profile-gate .btn {
   margin-top: 6px;
   width: fit-content;
+}
+
+.security-box {
+  border-radius: 16px;
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.security-form {
+  display: grid;
+  gap: 8px;
+  max-width: 460px;
+}
+
+.security-form .btn {
+  margin-top: 4px;
+  width: fit-content;
+}
+
+.security-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .anime-header::before {

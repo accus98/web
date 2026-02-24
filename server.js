@@ -3,11 +3,20 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { OAuth2Client } = require("google-auth-library");
+let nodemailer = null;
+try {
+  nodemailer = require("nodemailer");
+} catch {}
 
 const PORT = Number(process.env.PORT || 8787);
 const ROOT = process.cwd();
-const DATA_DIR = path.join(ROOT, ".yv-data");
+const DATA_DIR_INPUT = String(process.env.YV_DATA_DIR || "").trim();
+const DATA_DIR = DATA_DIR_INPUT
+  ? (path.isAbsolute(DATA_DIR_INPUT) ? DATA_DIR_INPUT : path.join(ROOT, DATA_DIR_INPUT))
+  : path.join(ROOT, ".yv-data");
 const DATA_FILE = path.join(DATA_DIR, "users.json");
+const SESSION_FILE = path.join(DATA_DIR, "sessions.json");
+const SECURITY_LOG_FILE = path.join(DATA_DIR, "security.log");
 
 function loadLocalEnvFiles() {
   const files = [path.join(ROOT, ".env.local"), path.join(ROOT, ".env")];
@@ -44,12 +53,28 @@ const KITSU_URL = "https://kitsu.io/api/edge";
 const TRANSLATE_URL = "https://api.mymemory.translated.net/get";
 const GOOGLE_TRANSLATE_URL = "https://translate.googleapis.com/translate_a/single";
 
+const DEFAULT_SESSION_SECRET = "yv_change_this_secret";
 const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || "").trim();
-const SESSION_SECRET = String(process.env.SESSION_SECRET || "yv_change_this_secret").trim();
+const SESSION_SECRET = String(process.env.SESSION_SECRET || DEFAULT_SESSION_SECRET).trim();
 const SESSION_COOKIE = "yv_sid";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PASSWORD_MIN_LEN = 6;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const AUTH_RATE_WINDOW_MS = 10 * 60 * 1000;
+const AUTH_RATE_MAX_ATTEMPTS = 8;
+const AUTH_RATE_LOCK_MS = 15 * 60 * 1000;
+const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
+const PASSWORD_RESET_MAX_ACTIVE_PER_USER = 5;
+const EMAIL_VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
+const EMAIL_VERIFY_MAX_ACTIVE_PER_USER = 5;
+
+const APP_BASE_URL = String(process.env.APP_BASE_URL || "").trim();
+const SMTP_HOST = String(process.env.SMTP_HOST || "").trim();
+const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
+const SMTP_USER = String(process.env.SMTP_USER || "").trim();
+const SMTP_PASS = String(process.env.SMTP_PASS || "").trim();
+const SMTP_FROM = String(process.env.SMTP_FROM || "").trim();
+const SMTP_SECURE = String(process.env.SMTP_SECURE || "").trim() === "true";
 
 const MAX_FAVORITES = 200;
 const MAX_PENDING = 200;
@@ -58,6 +83,7 @@ const MAX_HISTORY = 300;
 const CACHE = new Map();
 const MAX_CACHE_ITEMS = 700;
 const SESSIONS = new Map();
+const AUTH_RATE = new Map();
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -120,6 +146,19 @@ query RecommendationPool {
 `;
 
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+const smtpReady = Boolean(nodemailer && SMTP_HOST && SMTP_FROM && Number.isFinite(SMTP_PORT) && SMTP_PORT > 0);
+const mailTransport = smtpReady
+  ? nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_SECURE,
+      auth: SMTP_USER && SMTP_PASS ? { user: SMTP_USER, pass: SMTP_PASS } : undefined
+    })
+  : null;
+
+function isPasswordResetAvailable() {
+  return process.env.NODE_ENV !== "production" || smtpReady;
+}
 
 function now() {
   return Date.now();
@@ -378,12 +417,87 @@ function clearSessionCookie(res) {
   res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
 }
 
-function createSession(userId) {
+function defaultSessionStore() {
+  return {
+    version: 1,
+    sessions: {}
+  };
+}
+
+let sessionPersistTimer = null;
+function persistSessionsSoon(delayMs = 700) {
+  if (sessionPersistTimer) return;
+  sessionPersistTimer = setTimeout(() => {
+    sessionPersistTimer = null;
+    saveSessionStore();
+  }, delayMs);
+  if (typeof sessionPersistTimer.unref === "function") {
+    sessionPersistTimer.unref();
+  }
+}
+
+function loadSessionStore() {
+  ensureDataStore();
+  try {
+    if (!fs.existsSync(SESSION_FILE)) return;
+    const raw = fs.readFileSync(SESSION_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    const source = parsed?.sessions && typeof parsed.sessions === "object" ? parsed.sessions : {};
+    const ts = now();
+    Object.entries(source).forEach(([sessionId, data]) => {
+      const userId = String(data?.userId || "");
+      const expiresAt = Number(data?.expiresAt || 0);
+      if (!sessionId || !userId || !Number.isFinite(expiresAt) || expiresAt <= ts) return;
+      const createdAt = cleanText(data?.createdAt || nowIso()).slice(0, 48) || nowIso();
+      const lastSeenAt = cleanText(data?.lastSeenAt || createdAt).slice(0, 48) || createdAt;
+      const ip = cleanText(data?.ip || "").slice(0, 96);
+      const ua = cleanText(data?.ua || "").slice(0, 220);
+      SESSIONS.set(sessionId, { userId, expiresAt, createdAt, lastSeenAt, ip, ua });
+    });
+  } catch {}
+}
+
+function saveSessionStore() {
+  ensureDataStore();
+  const sessions = {};
+  const ts = now();
+  for (const [sessionId, data] of SESSIONS.entries()) {
+    if (!data?.userId || !Number.isFinite(data?.expiresAt) || data.expiresAt <= ts) continue;
+    sessions[sessionId] = {
+      userId: String(data.userId),
+      expiresAt: Number(data.expiresAt),
+      createdAt: cleanText(data.createdAt || "").slice(0, 48),
+      lastSeenAt: cleanText(data.lastSeenAt || "").slice(0, 48),
+      ip: cleanText(data.ip || "").slice(0, 96),
+      ua: cleanText(data.ua || "").slice(0, 220)
+    };
+  }
+  const payload = {
+    ...defaultSessionStore(),
+    sessions
+  };
+  const temp = `${SESSION_FILE}.tmp`;
+  try {
+    fs.writeFileSync(temp, JSON.stringify(payload, null, 2), "utf8");
+    fs.renameSync(temp, SESSION_FILE);
+  } catch {}
+}
+
+function createSession(userId, req = null) {
+  const startedAt = nowIso();
+  const ip = req ? cleanText(getClientIp(req)).slice(0, 96) : "";
+  const uaRaw = req ? String(req.headers?.["user-agent"] || "") : "";
+  const ua = cleanText(summarizeUserAgent(uaRaw)).slice(0, 220);
   const sessionId = crypto.randomBytes(24).toString("base64url");
   SESSIONS.set(sessionId, {
     userId,
-    expiresAt: now() + SESSION_TTL_MS
+    expiresAt: now() + SESSION_TTL_MS,
+    createdAt: startedAt,
+    lastSeenAt: startedAt,
+    ip,
+    ua
   });
+  persistSessionsSoon();
   return sessionId;
 }
 
@@ -402,19 +516,167 @@ function getSessionFromRequest(req) {
   if (!session) return null;
   if (session.expiresAt <= now()) {
     SESSIONS.delete(sessionId);
+    persistSessionsSoon();
     return null;
   }
-  session.expiresAt = now() + SESSION_TTL_MS;
+  if (!session.ip) {
+    session.ip = cleanText(getClientIp(req)).slice(0, 96);
+  }
+  if (!session.ua) {
+    const uaRaw = String(req.headers?.["user-agent"] || "");
+    session.ua = cleanText(summarizeUserAgent(uaRaw)).slice(0, 220);
+  }
+  const nextExpiresAt = now() + SESSION_TTL_MS;
+  const beforeLastSeenTs = Date.parse(String(session.lastSeenAt || ""));
+  const nextLastSeenAt = nowIso();
+  session.lastSeenAt = nextLastSeenAt;
+  // Evita escribir en disco en cada request; persiste solo si el cambio de TTL es relevante.
+  if (Math.abs(nextExpiresAt - Number(session.expiresAt || 0)) > 60_000) {
+    session.expiresAt = nextExpiresAt;
+    persistSessionsSoon(1200);
+  } else {
+    session.expiresAt = nextExpiresAt;
+    const shouldPersistSeen =
+      !Number.isFinite(beforeLastSeenTs) || Math.abs(now() - beforeLastSeenTs) > 3 * 60 * 1000;
+    if (shouldPersistSeen) persistSessionsSoon(1200);
+  }
   return { sessionId, ...session };
 }
 
 function pruneExpiredSessions() {
   const ts = now();
+  let changed = false;
   for (const [sid, session] of SESSIONS.entries()) {
     if (!session || session.expiresAt <= ts) {
       SESSIONS.delete(sid);
+      changed = true;
     }
   }
+  if (changed) persistSessionsSoon();
+}
+
+function flushSessionStoreNow() {
+  if (sessionPersistTimer) {
+    clearTimeout(sessionPersistTimer);
+    sessionPersistTimer = null;
+  }
+  saveSessionStore();
+}
+
+function getClientIp(req) {
+  const xff = String(req.headers["x-forwarded-for"] || "").trim();
+  if (xff) return xff.split(",")[0].trim();
+  const xri = String(req.headers["x-real-ip"] || "").trim();
+  if (xri) return xri;
+  return String(req.socket?.remoteAddress || "ip_unknown");
+}
+
+function summarizeUserAgent(uaRaw) {
+  const ua = String(uaRaw || "");
+  if (!ua) return "Dispositivo desconocido";
+
+  let browser = "Navegador";
+  if (/Edg\//i.test(ua)) browser = "Edge";
+  else if (/OPR\//i.test(ua)) browser = "Opera";
+  else if (/Firefox\//i.test(ua)) browser = "Firefox";
+  else if (/Chrome\//i.test(ua)) browser = "Chrome";
+  else if (/Safari\//i.test(ua)) browser = "Safari";
+
+  let os = "SO desconocido";
+  if (/Windows NT/i.test(ua)) os = "Windows";
+  else if (/Mac OS X/i.test(ua)) os = "macOS";
+  else if (/Android/i.test(ua)) os = "Android";
+  else if (/(iPhone|iPad|iPod)/i.test(ua)) os = "iOS";
+  else if (/Linux/i.test(ua)) os = "Linux";
+
+  const device = /Mobile|Android|iPhone|iPad|iPod/i.test(ua) ? "Movil" : "Escritorio";
+  return `${browser} en ${os} (${device})`;
+}
+
+function authRateKey(req, scope, identifier = "") {
+  const ip = getClientIp(req);
+  const id = String(identifier || "").trim().toLowerCase();
+  return `${scope}:${ip}:${id}`;
+}
+
+function checkAuthRateLimit(req, scope, identifier = "") {
+  const key = authRateKey(req, scope, identifier);
+  const ts = now();
+  const entry = AUTH_RATE.get(key);
+  if (!entry) return { allowed: true, retryAfterSec: 0 };
+
+  if (entry.lockedUntil && entry.lockedUntil > ts) {
+    const retryAfterSec = Math.max(1, Math.ceil((entry.lockedUntil - ts) / 1000));
+    return { allowed: false, retryAfterSec };
+  }
+
+  if (entry.windowStart + AUTH_RATE_WINDOW_MS <= ts) {
+    AUTH_RATE.delete(key);
+    return { allowed: true, retryAfterSec: 0 };
+  }
+
+  return { allowed: true, retryAfterSec: 0 };
+}
+
+function registerAuthFailure(req, scope, identifier = "") {
+  const key = authRateKey(req, scope, identifier);
+  const ts = now();
+  let entry = AUTH_RATE.get(key);
+  if (!entry || entry.windowStart + AUTH_RATE_WINDOW_MS <= ts) {
+    entry = { attempts: 0, windowStart: ts, lockedUntil: 0 };
+  }
+  entry.attempts += 1;
+  if (entry.attempts >= AUTH_RATE_MAX_ATTEMPTS) {
+    entry.lockedUntil = ts + AUTH_RATE_LOCK_MS;
+  }
+  AUTH_RATE.set(key, entry);
+}
+
+function registerAuthSuccess(req, scope, identifier = "") {
+  const key = authRateKey(req, scope, identifier);
+  if (AUTH_RATE.has(key)) AUTH_RATE.delete(key);
+}
+
+function sendRateLimited(res, retryAfterSec) {
+  sendJson(
+    res,
+    429,
+    {
+      error: "Demasiados intentos. Espera antes de volver a intentar.",
+      retryAfterSec
+    },
+    {
+      "Retry-After": String(retryAfterSec)
+    }
+  );
+}
+
+function securityValue(input, max = 180) {
+  return cleanText(input || "").slice(0, max);
+}
+
+function writeSecurityEvent(event, req = null, payload = {}) {
+  try {
+    ensureDataStore();
+    const entry = {
+      at: nowIso(),
+      event: securityValue(event, 80) || "event_unknown",
+      ip: req ? securityValue(getClientIp(req), 96) : "",
+      ua: req ? securityValue(summarizeUserAgent(String(req.headers?.["user-agent"] || "")), 220) : "",
+      ...payload
+    };
+    fs.appendFile(SECURITY_LOG_FILE, `${JSON.stringify(entry)}\n`, () => {});
+  } catch {}
+}
+
+function validateSessionSecret() {
+  const weakSecret = !SESSION_SECRET || SESSION_SECRET === DEFAULT_SESSION_SECRET || SESSION_SECRET.length < 24;
+  if (!weakSecret) return;
+  const message = "SESSION_SECRET es debil. Usa una clave aleatoria larga (minimo 24 caracteres).";
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(message);
+  }
+  console.warn(`Aviso: ${message}`);
 }
 
 function ensureDataStore() {
@@ -429,7 +691,9 @@ function defaultDatabase() {
     users: {},
     googleIndex: {},
     emailIndex: {},
-    profiles: {}
+    profiles: {},
+    passwordResetTokens: {},
+    emailVerifyTokens: {}
   };
 }
 
@@ -450,7 +714,11 @@ function loadDatabase() {
       users: parsed.users && typeof parsed.users === "object" ? parsed.users : {},
       googleIndex: parsed.googleIndex && typeof parsed.googleIndex === "object" ? parsed.googleIndex : {},
       emailIndex: parsed.emailIndex && typeof parsed.emailIndex === "object" ? parsed.emailIndex : {},
-      profiles: parsed.profiles && typeof parsed.profiles === "object" ? parsed.profiles : {}
+      profiles: parsed.profiles && typeof parsed.profiles === "object" ? parsed.profiles : {},
+      passwordResetTokens:
+        parsed.passwordResetTokens && typeof parsed.passwordResetTokens === "object" ? parsed.passwordResetTokens : {},
+      emailVerifyTokens:
+        parsed.emailVerifyTokens && typeof parsed.emailVerifyTokens === "object" ? parsed.emailVerifyTokens : {}
     };
   } catch {
     return defaultDatabase();
@@ -493,6 +761,13 @@ function profileStats(profile) {
   };
 }
 
+function isUserEmailVerified(user) {
+  if (!user) return false;
+  if (user.emailVerificationPending === true) return false;
+  if (user.emailVerificationPending === undefined) return true;
+  return Boolean(cleanText(user.emailVerifiedAt || "").slice(0, 48));
+}
+
 function publicUser(user) {
   if (!user) return null;
   return {
@@ -501,6 +776,7 @@ function publicUser(user) {
     email: user.email,
     picture: user.picture || "",
     authProviders: normalizeProviders(user.authProviders || []),
+    emailVerified: isUserEmailVerified(user),
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt
   };
@@ -686,6 +962,36 @@ function requireAuth(req, res) {
   return context;
 }
 
+function listActiveSessionsForUser(userId, currentSessionId = "") {
+  const uid = String(userId || "");
+  const nowTs = now();
+  const currentId = String(currentSessionId || "");
+  const items = [];
+
+  for (const [sid, session] of SESSIONS.entries()) {
+    if (!session || session.userId !== uid) continue;
+    if (!Number.isFinite(session.expiresAt) || session.expiresAt <= nowTs) continue;
+    items.push({
+      sessionId: sid,
+      isCurrent: sid === currentId,
+      createdAt: cleanText(session.createdAt || "").slice(0, 48),
+      lastSeenAt: cleanText(session.lastSeenAt || "").slice(0, 48),
+      expiresAt: Number(session.expiresAt),
+      ip: cleanText(session.ip || "").slice(0, 96),
+      ua: cleanText(session.ua || "").slice(0, 220)
+    });
+  }
+
+  return items.sort((a, b) => {
+    const aCurrent = a.isCurrent ? 1 : 0;
+    const bCurrent = b.isCurrent ? 1 : 0;
+    if (aCurrent !== bCurrent) return bCurrent - aCurrent;
+    const aLast = Date.parse(String(a.lastSeenAt || "")) || 0;
+    const bLast = Date.parse(String(b.lastSeenAt || "")) || 0;
+    return bLast - aLast;
+  });
+}
+
 function normalizeProviders(input) {
   const out = [];
   const seen = new Set();
@@ -708,6 +1014,352 @@ function findUserByEmail(email) {
   return user;
 }
 
+function ensurePasswordResetStore() {
+  if (!DB.passwordResetTokens || typeof DB.passwordResetTokens !== "object") {
+    DB.passwordResetTokens = {};
+  }
+  return DB.passwordResetTokens;
+}
+
+function hashResetSecret(secret) {
+  return crypto.createHmac("sha256", SESSION_SECRET).update(String(secret || "")).digest("base64url");
+}
+
+function buildAppUrl(req, pathAndQuery) {
+  const pathSafe = String(pathAndQuery || "/").startsWith("/") ? String(pathAndQuery || "/") : `/${pathAndQuery || ""}`;
+  if (APP_BASE_URL) {
+    try {
+      return new URL(pathSafe, APP_BASE_URL).toString();
+    } catch {}
+  }
+  const host = String(req?.headers?.host || "").trim() || `localhost:${PORT}`;
+  const protoHeader = String(req?.headers?.["x-forwarded-proto"] || "").trim().toLowerCase();
+  const protocol = protoHeader === "https" ? "https" : "http";
+  return `${protocol}://${host}${pathSafe}`;
+}
+
+function cleanupPasswordResetTokens() {
+  const store = ensurePasswordResetStore();
+  const ts = now();
+  let changed = false;
+  Object.entries(store).forEach(([tokenId, entry]) => {
+    const expiresAt = Number(entry?.expiresAt || 0);
+    const usedAt = Number(entry?.usedAt || 0);
+    const shouldDeleteExpired = !Number.isFinite(expiresAt) || expiresAt <= ts;
+    const shouldDeleteUsed = Number.isFinite(usedAt) && usedAt > 0 && ts - usedAt > 24 * 60 * 60 * 1000;
+    if (shouldDeleteExpired || shouldDeleteUsed) {
+      delete store[tokenId];
+      changed = true;
+    }
+  });
+  if (changed) saveDatabase();
+}
+
+function createPasswordResetTokenForUser(user, req) {
+  const store = ensurePasswordResetStore();
+  cleanupPasswordResetTokens();
+
+  const activeForUser = Object.values(store)
+    .filter((entry) => entry && entry.userId === user.id && Number(entry.expiresAt || 0) > now() && !Number(entry.usedAt || 0))
+    .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+  while (activeForUser.length >= PASSWORD_RESET_MAX_ACTIVE_PER_USER) {
+    const oldest = activeForUser.shift();
+    if (oldest?.id && store[oldest.id]) delete store[oldest.id];
+  }
+
+  const tokenId = crypto.randomBytes(12).toString("base64url");
+  const secret = crypto.randomBytes(24).toString("base64url");
+  const createdAt = now();
+  const expiresAt = createdAt + PASSWORD_RESET_TTL_MS;
+  store[tokenId] = {
+    id: tokenId,
+    userId: user.id,
+    email: user.email,
+    secretHash: hashResetSecret(secret),
+    createdAt,
+    expiresAt,
+    usedAt: 0,
+    requestedIp: cleanText(getClientIp(req)).slice(0, 96),
+    requestedUa: cleanText(summarizeUserAgent(String(req?.headers?.["user-agent"] || ""))).slice(0, 220)
+  };
+  saveDatabase();
+  return `${tokenId}.${secret}`;
+}
+
+function verifyPasswordResetToken(rawToken) {
+  const token = String(rawToken || "").trim();
+  const dot = token.indexOf(".");
+  if (dot <= 0) return { ok: false, reason: "invalid" };
+  const tokenId = token.slice(0, dot);
+  const secret = token.slice(dot + 1);
+  if (!tokenId || !secret) return { ok: false, reason: "invalid" };
+
+  const store = ensurePasswordResetStore();
+  const entry = store[tokenId];
+  if (!entry) return { ok: false, reason: "not_found" };
+  if (Number(entry.usedAt || 0) > 0) return { ok: false, reason: "used" };
+  if (Number(entry.expiresAt || 0) <= now()) return { ok: false, reason: "expired" };
+
+  const incoming = hashResetSecret(secret);
+  const expected = String(entry.secretHash || "");
+  const a = Buffer.from(incoming, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  if (a.length !== b.length) return { ok: false, reason: "invalid" };
+  if (!crypto.timingSafeEqual(a, b)) return { ok: false, reason: "invalid" };
+  return { ok: true, tokenId, entry };
+}
+
+function markPasswordResetTokenUsed(tokenId, req) {
+  const store = ensurePasswordResetStore();
+  const entry = store[String(tokenId || "")];
+  if (!entry) return;
+  entry.usedAt = now();
+  entry.usedIp = cleanText(getClientIp(req)).slice(0, 96);
+  entry.usedUa = cleanText(summarizeUserAgent(String(req?.headers?.["user-agent"] || ""))).slice(0, 220);
+  store[String(tokenId || "")] = entry;
+  saveDatabase();
+}
+
+function invalidatePasswordResetTokensForUser(userId, exceptTokenId = "") {
+  const uid = String(userId || "");
+  if (!uid) return 0;
+  const exceptId = String(exceptTokenId || "");
+  const store = ensurePasswordResetStore();
+  let removed = 0;
+  Object.entries(store).forEach(([tokenId, entry]) => {
+    if (!entry || String(entry.userId || "") !== uid) return;
+    if (exceptId && tokenId === exceptId) return;
+    delete store[tokenId];
+    removed += 1;
+  });
+  if (removed > 0) saveDatabase();
+  return removed;
+}
+
+function revokeAllSessionsByUserId(userId) {
+  const uid = String(userId || "");
+  let removed = 0;
+  for (const [sid, session] of SESSIONS.entries()) {
+    if (!session || session.userId !== uid) continue;
+    SESSIONS.delete(sid);
+    removed += 1;
+  }
+  if (removed > 0) persistSessionsSoon();
+  return removed;
+}
+
+async function sendPasswordResetEmail(email, resetUrl, displayName = "") {
+  if (!mailTransport) {
+    return { sent: false, reason: "smtp_not_configured" };
+  }
+  const safeEmail = normalizeEmail(email);
+  if (!isValidEmail(safeEmail)) return { sent: false, reason: "invalid_email" };
+
+  const name = cleanText(displayName || "Usuario").slice(0, 80) || "Usuario";
+  const subject = "Restablece tu contrasena de YumeVerse";
+  const text = [
+    `Hola ${name},`,
+    "",
+    "Recibimos una solicitud para restablecer tu contrasena.",
+    "Si fuiste tu, abre este enlace:",
+    resetUrl,
+    "",
+    "El enlace expira en 30 minutos.",
+    "Si no solicitaste este cambio, ignora este mensaje."
+  ].join("\n");
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.5;color:#1b1b1b">
+      <p>Hola <strong>${escHtml(name)}</strong>,</p>
+      <p>Recibimos una solicitud para restablecer tu contrasena.</p>
+      <p>
+        <a href="${escHtml(resetUrl)}" style="display:inline-block;padding:10px 14px;background:#ff6a1b;color:#fff;border-radius:8px;text-decoration:none;">
+          Restablecer contrasena
+        </a>
+      </p>
+      <p style="font-size:13px;color:#555">El enlace expira en 30 minutos.</p>
+      <p style="font-size:13px;color:#555">Si no solicitaste este cambio, ignora este mensaje.</p>
+    </div>
+  `;
+
+  await mailTransport.sendMail({
+    from: SMTP_FROM,
+    to: safeEmail,
+    subject,
+    text,
+    html
+  });
+  return { sent: true };
+}
+
+function escHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function ensureEmailVerifyStore() {
+  if (!DB.emailVerifyTokens || typeof DB.emailVerifyTokens !== "object") {
+    DB.emailVerifyTokens = {};
+  }
+  return DB.emailVerifyTokens;
+}
+
+function cleanupEmailVerifyTokens() {
+  const store = ensureEmailVerifyStore();
+  const ts = now();
+  let changed = false;
+  Object.entries(store).forEach(([tokenId, entry]) => {
+    const expiresAt = Number(entry?.expiresAt || 0);
+    const usedAt = Number(entry?.usedAt || 0);
+    const shouldDeleteExpired = !Number.isFinite(expiresAt) || expiresAt <= ts;
+    const shouldDeleteUsed = Number.isFinite(usedAt) && usedAt > 0 && ts - usedAt > 14 * 24 * 60 * 60 * 1000;
+    if (shouldDeleteExpired || shouldDeleteUsed) {
+      delete store[tokenId];
+      changed = true;
+    }
+  });
+  if (changed) saveDatabase();
+}
+
+function createEmailVerifyTokenForUser(user, req) {
+  const store = ensureEmailVerifyStore();
+  cleanupEmailVerifyTokens();
+
+  const activeForUser = Object.values(store)
+    .filter((entry) => entry && entry.userId === user.id && Number(entry.expiresAt || 0) > now() && !Number(entry.usedAt || 0))
+    .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+  while (activeForUser.length >= EMAIL_VERIFY_MAX_ACTIVE_PER_USER) {
+    const oldest = activeForUser.shift();
+    if (oldest?.id && store[oldest.id]) delete store[oldest.id];
+  }
+
+  const tokenId = crypto.randomBytes(12).toString("base64url");
+  const secret = crypto.randomBytes(24).toString("base64url");
+  const createdAt = now();
+  const expiresAt = createdAt + EMAIL_VERIFY_TTL_MS;
+
+  store[tokenId] = {
+    id: tokenId,
+    userId: user.id,
+    email: user.email,
+    secretHash: hashResetSecret(secret),
+    createdAt,
+    expiresAt,
+    usedAt: 0,
+    requestedIp: cleanText(getClientIp(req)).slice(0, 96),
+    requestedUa: cleanText(summarizeUserAgent(String(req?.headers?.["user-agent"] || ""))).slice(0, 220)
+  };
+  saveDatabase();
+  return `${tokenId}.${secret}`;
+}
+
+function verifyEmailToken(rawToken) {
+  const token = String(rawToken || "").trim();
+  const dot = token.indexOf(".");
+  if (dot <= 0) return { ok: false, reason: "invalid" };
+  const tokenId = token.slice(0, dot);
+  const secret = token.slice(dot + 1);
+  if (!tokenId || !secret) return { ok: false, reason: "invalid" };
+
+  const store = ensureEmailVerifyStore();
+  const entry = store[tokenId];
+  if (!entry) return { ok: false, reason: "not_found" };
+  if (Number(entry.usedAt || 0) > 0) return { ok: false, reason: "used" };
+  if (Number(entry.expiresAt || 0) <= now()) return { ok: false, reason: "expired" };
+
+  const incoming = hashResetSecret(secret);
+  const expected = String(entry.secretHash || "");
+  const a = Buffer.from(incoming, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  if (a.length !== b.length) return { ok: false, reason: "invalid" };
+  if (!crypto.timingSafeEqual(a, b)) return { ok: false, reason: "invalid" };
+  return { ok: true, tokenId, entry };
+}
+
+function markEmailVerifyTokenUsed(tokenId, req) {
+  const store = ensureEmailVerifyStore();
+  const entry = store[String(tokenId || "")];
+  if (!entry) return;
+  entry.usedAt = now();
+  entry.usedIp = cleanText(getClientIp(req)).slice(0, 96);
+  entry.usedUa = cleanText(summarizeUserAgent(String(req?.headers?.["user-agent"] || ""))).slice(0, 220);
+  store[String(tokenId || "")] = entry;
+  saveDatabase();
+}
+
+function invalidateEmailVerifyTokensForUser(userId, exceptTokenId = "") {
+  const uid = String(userId || "");
+  if (!uid) return 0;
+  const exceptId = String(exceptTokenId || "");
+  const store = ensureEmailVerifyStore();
+  let removed = 0;
+  Object.entries(store).forEach(([tokenId, entry]) => {
+    if (!entry || String(entry.userId || "") !== uid) return;
+    if (exceptId && tokenId === exceptId) return;
+    delete store[tokenId];
+    removed += 1;
+  });
+  if (removed > 0) saveDatabase();
+  return removed;
+}
+
+async function sendEmailVerificationEmail(email, verifyUrl, displayName = "") {
+  if (!mailTransport) {
+    return { sent: false, reason: "smtp_not_configured" };
+  }
+  const safeEmail = normalizeEmail(email);
+  if (!isValidEmail(safeEmail)) return { sent: false, reason: "invalid_email" };
+
+  const name = cleanText(displayName || "Usuario").slice(0, 80) || "Usuario";
+  const subject = "Confirma tu correo en YumeVerse";
+  const text = [
+    `Hola ${name},`,
+    "",
+    "Para activar tu cuenta local, confirma tu correo:",
+    verifyUrl,
+    "",
+    "El enlace expira en 24 horas.",
+    "Si no creaste esta cuenta, ignora este mensaje."
+  ].join("\n");
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.5;color:#1b1b1b">
+      <p>Hola <strong>${escHtml(name)}</strong>,</p>
+      <p>Para activar tu cuenta local, confirma tu correo:</p>
+      <p>
+        <a href="${escHtml(verifyUrl)}" style="display:inline-block;padding:10px 14px;background:#ff6a1b;color:#fff;border-radius:8px;text-decoration:none;">
+          Verificar correo
+        </a>
+      </p>
+      <p style="font-size:13px;color:#555">El enlace expira en 24 horas.</p>
+      <p style="font-size:13px;color:#555">Si no creaste esta cuenta, ignora este mensaje.</p>
+    </div>
+  `;
+
+  await mailTransport.sendMail({
+    from: SMTP_FROM,
+    to: safeEmail,
+    subject,
+    text,
+    html
+  });
+  return { sent: true };
+}
+
+async function sendOrLogEmailVerification(user, req) {
+  const token = createEmailVerifyTokenForUser(user, req);
+  const verifyUrl = buildAppUrl(req, `/verify-email.html?token=${encodeURIComponent(token)}`);
+  const sent = await sendEmailVerificationEmail(user.email, verifyUrl, user.name || "Usuario");
+  if (!sent.sent || process.env.NODE_ENV !== "production") {
+    console.log(`[email-verify] ${user.email} -> ${verifyUrl}`);
+  }
+  return { sent: sent.sent, verifyUrl };
+}
+
 function upsertLocalUser({ email, password, name }) {
   const normalizedEmail = normalizeEmail(email);
   if (!isValidEmail(normalizedEmail)) {
@@ -725,6 +1377,9 @@ function upsertLocalUser({ email, password, name }) {
   const createdAt = existing?.createdAt || nowIso();
   const passwordPack = hashPassword(safePassword);
   const providers = normalizeProviders([...(existing?.authProviders || []), "local"]);
+  const verifiedByGoogle = Boolean(existing?.googleSub && cleanText(existing?.email || "").toLowerCase() === normalizedEmail);
+  const alreadyVerified = Boolean(cleanText(existing?.emailVerifiedAt || "").slice(0, 48));
+  const emailVerificationPending = !(verifiedByGoogle || alreadyVerified);
 
   const user = {
     ...(existing || {}),
@@ -738,7 +1393,9 @@ function upsertLocalUser({ email, password, name }) {
       salt: passwordPack.salt,
       hash: passwordPack.hash,
       updatedAt: nowIso()
-    }
+    },
+    emailVerificationPending,
+    emailVerifiedAt: emailVerificationPending ? "" : cleanText(existing?.emailVerifiedAt || nowIso()).slice(0, 48)
   };
 
   if (!user.picture) user.picture = "";
@@ -758,9 +1415,34 @@ function loginLocalUser({ email, password }) {
 
   const ok = verifyPassword(password, user.localAuth.salt, user.localAuth.hash);
   if (!ok) throw new Error("Correo o contrasena incorrectos");
+  if (user.emailVerificationPending === true) {
+    const err = new Error("Debes verificar tu correo antes de iniciar sesion");
+    err.code = "EMAIL_NOT_VERIFIED";
+    throw err;
+  }
 
   user.lastLoginAt = nowIso();
   user.authProviders = normalizeProviders([...(user.authProviders || []), "local"]);
+  DB.users[user.id] = user;
+  saveDatabase();
+  return user;
+}
+
+function setOrUpdateLocalPassword(user, nextPassword) {
+  const safePassword = String(nextPassword || "");
+  if (safePassword.length < PASSWORD_MIN_LEN) {
+    throw new Error(`La contrasena debe tener al menos ${PASSWORD_MIN_LEN} caracteres`);
+  }
+  const pack = hashPassword(safePassword);
+  user.localAuth = {
+    salt: pack.salt,
+    hash: pack.hash,
+    updatedAt: nowIso()
+  };
+  user.authProviders = normalizeProviders([...(user.authProviders || []), "local"]);
+  if (user.emailVerificationPending !== true && !cleanText(user.emailVerifiedAt || "").slice(0, 48)) {
+    user.emailVerifiedAt = nowIso();
+  }
   DB.users[user.id] = user;
   saveDatabase();
   return user;
@@ -793,7 +1475,9 @@ function upsertGoogleUser(payload) {
     picture,
     createdAt,
     lastLoginAt: nowIso(),
-    authProviders: providers
+    authProviders: providers,
+    emailVerificationPending: false,
+    emailVerifiedAt: cleanText(previous?.emailVerifiedAt || nowIso()).slice(0, 48)
   };
 
   DB.users[userId] = user;
@@ -1005,7 +1689,9 @@ async function handleConfig(req, res) {
     googleAuthEnabled: Boolean(GOOGLE_CLIENT_ID),
     googleClientId: GOOGLE_CLIENT_ID || "",
     localAuthEnabled: true,
-    passwordMinLen: PASSWORD_MIN_LEN
+    passwordMinLen: PASSWORD_MIN_LEN,
+    passwordResetEnabled: isPasswordResetAvailable(),
+    emailVerificationEnabled: true
   });
 }
 
@@ -1035,7 +1721,15 @@ async function handleAuthGoogle(req, res) {
     return;
   }
 
+  const gate = checkAuthRateLimit(req, "google");
+  if (!gate.allowed) {
+    writeSecurityEvent("auth_google_rate_limited", req, { retryAfterSec: gate.retryAfterSec });
+    sendRateLimited(res, gate.retryAfterSec);
+    return;
+  }
+
   if (!googleClient || !GOOGLE_CLIENT_ID) {
+    writeSecurityEvent("auth_google_unavailable", req, {});
     sendJson(res, 503, { error: "Google Auth no configurado. Define GOOGLE_CLIENT_ID." });
     return;
   }
@@ -1044,6 +1738,8 @@ async function handleAuthGoogle(req, res) {
   if (body === null) return;
   const credential = String(body?.credential || "").trim();
   if (!credential) {
+    registerAuthFailure(req, "google");
+    writeSecurityEvent("auth_google_failed", req, { reason: "missing_credential" });
     sendJson(res, 400, { error: "Falta credential" });
     return;
   }
@@ -1056,18 +1752,24 @@ async function handleAuthGoogle(req, res) {
     const payload = ticket.getPayload() || {};
 
     if (!payload.sub || !payload.email) {
+      registerAuthFailure(req, "google");
+      writeSecurityEvent("auth_google_failed", req, { reason: "invalid_payload" });
       sendJson(res, 401, { error: "Token Google invalido" });
       return;
     }
 
     if (payload.email_verified === false) {
+      registerAuthFailure(req, "google");
+      writeSecurityEvent("auth_google_failed", req, { reason: "email_not_verified" });
       sendJson(res, 401, { error: "Correo Google no verificado" });
       return;
     }
 
     const user = upsertGoogleUser(payload);
-    const sessionId = createSession(user.id);
+    const sessionId = createSession(user.id, req);
     setSessionCookie(res, sessionId);
+    registerAuthSuccess(req, "google");
+    writeSecurityEvent("auth_google_success", req, { userId: user.id, email: securityValue(user.email, 120) });
 
     const profile = ensureProfile(user.id);
     sendJson(res, 200, {
@@ -1076,6 +1778,8 @@ async function handleAuthGoogle(req, res) {
       stats: profileStats(profile)
     });
   } catch (error) {
+    registerAuthFailure(req, "google");
+    writeSecurityEvent("auth_google_failed", req, { reason: "verify_exception" });
     sendJson(res, 401, { error: "No se pudo verificar la cuenta de Google", details: String(error.message || error) });
   }
 }
@@ -1093,19 +1797,54 @@ async function handleAuthRegister(req, res) {
   const password = String(body?.password || "");
   const name = normalizeDisplayName(body?.name || email.split("@")[0] || "Usuario");
 
+  const gateIp = checkAuthRateLimit(req, "register");
+  const gateEmail = email ? checkAuthRateLimit(req, "register", email) : { allowed: true, retryAfterSec: 0 };
+  const blockedRetry = Math.max(gateIp.retryAfterSec || 0, gateEmail.retryAfterSec || 0);
+  if (!gateIp.allowed || !gateEmail.allowed) {
+    writeSecurityEvent("auth_register_rate_limited", req, { email: securityValue(email, 120), retryAfterSec: blockedRetry || 1 });
+    sendRateLimited(res, blockedRetry || 1);
+    return;
+  }
+
   if (!isValidEmail(email)) {
+    registerAuthFailure(req, "register");
+    writeSecurityEvent("auth_register_failed", req, { reason: "invalid_email", email: securityValue(email, 120) });
     sendJson(res, 400, { error: "Correo invalido" });
     return;
   }
   if (password.length < PASSWORD_MIN_LEN) {
+    registerAuthFailure(req, "register");
+    registerAuthFailure(req, "register", email);
+    writeSecurityEvent("auth_register_failed", req, { reason: "weak_password", email: securityValue(email, 120) });
     sendJson(res, 400, { error: `La contrasena debe tener al menos ${PASSWORD_MIN_LEN} caracteres` });
     return;
   }
 
   try {
     const user = upsertLocalUser({ email, password, name });
-    const sessionId = createSession(user.id);
+    registerAuthSuccess(req, "register");
+    registerAuthSuccess(req, "register", email);
+    if (user.emailVerificationPending === true) {
+      await sendOrLogEmailVerification(user, req);
+      writeSecurityEvent("auth_register_verification_required", req, {
+        userId: user.id,
+        email: securityValue(user.email, 120)
+      });
+      clearSessionCookie(res);
+      sendJson(res, 200, {
+        authenticated: false,
+        requiresEmailVerification: true,
+        message: "Cuenta creada. Revisa tu correo para verificar y activar el acceso."
+      });
+      return;
+    }
+
+    const sessionId = createSession(user.id, req);
     setSessionCookie(res, sessionId);
+    writeSecurityEvent("auth_register_success", req, {
+      userId: user.id,
+      email: securityValue(user.email, 120)
+    });
     const profile = ensureProfile(user.id);
     sendJson(res, 200, {
       authenticated: true,
@@ -1113,6 +1852,9 @@ async function handleAuthRegister(req, res) {
       stats: profileStats(profile)
     });
   } catch (error) {
+    registerAuthFailure(req, "register");
+    registerAuthFailure(req, "register", email);
+    writeSecurityEvent("auth_register_failed", req, { reason: "exception", email: securityValue(email, 120) });
     sendJson(res, 400, { error: String(error.message || error) });
   }
 }
@@ -1129,19 +1871,36 @@ async function handleAuthLogin(req, res) {
   const email = normalizeEmail(body?.email || "");
   const password = String(body?.password || "");
 
+  const gateIp = checkAuthRateLimit(req, "login");
+  const gateEmail = email ? checkAuthRateLimit(req, "login", email) : { allowed: true, retryAfterSec: 0 };
+  const blockedRetry = Math.max(gateIp.retryAfterSec || 0, gateEmail.retryAfterSec || 0);
+  if (!gateIp.allowed || !gateEmail.allowed) {
+    writeSecurityEvent("auth_login_rate_limited", req, { email: securityValue(email, 120), retryAfterSec: blockedRetry || 1 });
+    sendRateLimited(res, blockedRetry || 1);
+    return;
+  }
+
   if (!isValidEmail(email)) {
+    registerAuthFailure(req, "login");
+    writeSecurityEvent("auth_login_failed", req, { reason: "invalid_email", email: securityValue(email, 120) });
     sendJson(res, 400, { error: "Correo invalido" });
     return;
   }
   if (!password) {
+    registerAuthFailure(req, "login");
+    registerAuthFailure(req, "login", email);
+    writeSecurityEvent("auth_login_failed", req, { reason: "missing_password", email: securityValue(email, 120) });
     sendJson(res, 400, { error: "Falta contrasena" });
     return;
   }
 
   try {
     const user = loginLocalUser({ email, password });
-    const sessionId = createSession(user.id);
+    const sessionId = createSession(user.id, req);
     setSessionCookie(res, sessionId);
+    registerAuthSuccess(req, "login");
+    registerAuthSuccess(req, "login", email);
+    writeSecurityEvent("auth_login_success", req, { userId: user.id, email: securityValue(user.email, 120) });
     const profile = ensureProfile(user.id);
     sendJson(res, 200, {
       authenticated: true,
@@ -1149,6 +1908,19 @@ async function handleAuthLogin(req, res) {
       stats: profileStats(profile)
     });
   } catch (error) {
+    registerAuthFailure(req, "login");
+    registerAuthFailure(req, "login", email);
+    writeSecurityEvent("auth_login_failed", req, {
+      reason: error && error.code === "EMAIL_NOT_VERIFIED" ? "email_not_verified" : "invalid_credentials",
+      email: securityValue(email, 120)
+    });
+    if (error && error.code === "EMAIL_NOT_VERIFIED") {
+      sendJson(res, 403, {
+        error: String(error.message || "Debes verificar tu correo antes de iniciar sesion"),
+        needsEmailVerification: true
+      });
+      return;
+    }
     sendJson(res, 401, { error: String(error.message || error) });
   }
 }
@@ -1161,9 +1933,446 @@ async function handleAuthLogout(req, res) {
   const session = getSessionFromRequest(req);
   if (session?.sessionId) {
     SESSIONS.delete(session.sessionId);
+    persistSessionsSoon();
+    writeSecurityEvent("auth_logout", req, { userId: session.userId || "", sessionId: session.sessionId });
   }
   clearSessionCookie(res);
   sendJson(res, 200, { ok: true });
+}
+
+async function handleAuthEmailResend(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Metodo no permitido" });
+    return;
+  }
+
+  const body = await readJsonBody(req, res);
+  if (body === null) return;
+  const auth = getAuthContext(req);
+  const emailFromBody = normalizeEmail(body?.email || "");
+  const email = emailFromBody || normalizeEmail(auth?.user?.email || "");
+  const genericMessage = "Si la cuenta existe y esta pendiente, enviaremos un nuevo enlace de verificacion.";
+
+  const gateIp = checkAuthRateLimit(req, "email_resend");
+  const gateEmail = email ? checkAuthRateLimit(req, "email_resend", email) : { allowed: true, retryAfterSec: 0 };
+  const blockedRetry = Math.max(gateIp.retryAfterSec || 0, gateEmail.retryAfterSec || 0);
+  if (!gateIp.allowed || !gateEmail.allowed) {
+    writeSecurityEvent("auth_email_resend_rate_limited", req, {
+      email: securityValue(email, 120),
+      retryAfterSec: blockedRetry || 1
+    });
+    sendRateLimited(res, blockedRetry || 1);
+    return;
+  }
+
+  if (!isValidEmail(email)) {
+    registerAuthFailure(req, "email_resend");
+    writeSecurityEvent("auth_email_resend_failed", req, { reason: "invalid_email", email: securityValue(email, 120) });
+    sendJson(res, 200, { ok: true, message: genericMessage });
+    return;
+  }
+
+  const user = findUserByEmail(email);
+  if (!user || !user.localAuth?.salt || !user.localAuth?.hash || user.emailVerificationPending !== true) {
+    registerAuthFailure(req, "email_resend");
+    registerAuthFailure(req, "email_resend", email);
+    writeSecurityEvent("auth_email_resend_ignored", req, { email: securityValue(email, 120) });
+    sendJson(res, 200, { ok: true, message: genericMessage });
+    return;
+  }
+
+  try {
+    await sendOrLogEmailVerification(user, req);
+    registerAuthSuccess(req, "email_resend");
+    registerAuthSuccess(req, "email_resend", email);
+    writeSecurityEvent("auth_email_resend_success", req, { userId: user.id, email: securityValue(email, 120) });
+    sendJson(res, 200, { ok: true, message: genericMessage });
+  } catch {
+    registerAuthFailure(req, "email_resend");
+    registerAuthFailure(req, "email_resend", email);
+    writeSecurityEvent("auth_email_resend_failed", req, { reason: "send_error", email: securityValue(email, 120) });
+    sendJson(res, 200, { ok: true, message: genericMessage });
+  }
+}
+
+async function handleAuthEmailVerify(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Metodo no permitido" });
+    return;
+  }
+
+  const gateIp = checkAuthRateLimit(req, "email_verify");
+  if (!gateIp.allowed) {
+    writeSecurityEvent("auth_email_verify_rate_limited", req, { retryAfterSec: gateIp.retryAfterSec });
+    sendRateLimited(res, gateIp.retryAfterSec);
+    return;
+  }
+
+  const body = await readJsonBody(req, res);
+  if (body === null) return;
+  const token = String(body?.token || "").trim();
+  if (!token) {
+    registerAuthFailure(req, "email_verify");
+    writeSecurityEvent("auth_email_verify_failed", req, { reason: "missing_token" });
+    sendJson(res, 400, { error: "Falta token de verificacion" });
+    return;
+  }
+
+  cleanupEmailVerifyTokens();
+  const checked = verifyEmailToken(token);
+  if (!checked.ok) {
+    registerAuthFailure(req, "email_verify");
+    writeSecurityEvent("auth_email_verify_failed", req, { reason: "invalid_token" });
+    sendJson(res, 400, { error: "Token de verificacion invalido o expirado" });
+    return;
+  }
+
+  const user = DB.users[String(checked.entry.userId || "")];
+  if (!user) {
+    registerAuthFailure(req, "email_verify");
+    writeSecurityEvent("auth_email_verify_failed", req, { reason: "user_not_found" });
+    sendJson(res, 404, { error: "Usuario no encontrado" });
+    return;
+  }
+  const expectedEmail = normalizeEmail(checked.entry.email || "");
+  if (!expectedEmail || normalizeEmail(user.email || "") !== expectedEmail) {
+    registerAuthFailure(req, "email_verify");
+    writeSecurityEvent("auth_email_verify_failed", req, { reason: "email_mismatch", userId: user.id });
+    sendJson(res, 400, { error: "Token de verificacion no coincide con la cuenta" });
+    return;
+  }
+
+  user.emailVerificationPending = false;
+  if (!cleanText(user.emailVerifiedAt || "").slice(0, 48)) {
+    user.emailVerifiedAt = nowIso();
+  }
+  user.authProviders = normalizeProviders([...(user.authProviders || []), "local"]);
+  DB.users[user.id] = user;
+  saveDatabase();
+
+  markEmailVerifyTokenUsed(checked.tokenId, req);
+  invalidateEmailVerifyTokensForUser(user.id, checked.tokenId);
+  registerAuthSuccess(req, "email_verify");
+  const sessionId = createSession(user.id, req);
+  setSessionCookie(res, sessionId);
+  const profile = ensureProfile(user.id);
+  writeSecurityEvent("auth_email_verify_success", req, {
+    userId: user.id,
+    email: securityValue(user.email, 120)
+  });
+
+  sendJson(res, 200, {
+    ok: true,
+    authenticated: true,
+    user: publicUser(user),
+    stats: profileStats(profile),
+    message: "Correo verificado correctamente"
+  });
+}
+
+async function handleAuthPasswordForgot(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Metodo no permitido" });
+    return;
+  }
+
+  if (!isPasswordResetAvailable()) {
+    writeSecurityEvent("auth_password_forgot_unavailable", req, {});
+    sendJson(res, 503, { error: "Recuperacion de contrasena no disponible en este servidor" });
+    return;
+  }
+
+  const body = await readJsonBody(req, res);
+  if (body === null) return;
+  const email = normalizeEmail(body?.email || "");
+  const genericMessage = "Si el correo existe, enviaremos un enlace para restablecer la contrasena.";
+
+  const gateIp = checkAuthRateLimit(req, "password_forgot");
+  const gateEmail = email ? checkAuthRateLimit(req, "password_forgot", email) : { allowed: true, retryAfterSec: 0 };
+  const blockedRetry = Math.max(gateIp.retryAfterSec || 0, gateEmail.retryAfterSec || 0);
+  if (!gateIp.allowed || !gateEmail.allowed) {
+    writeSecurityEvent("auth_password_forgot_rate_limited", req, {
+      email: securityValue(email, 120),
+      retryAfterSec: blockedRetry || 1
+    });
+    sendRateLimited(res, blockedRetry || 1);
+    return;
+  }
+
+  if (!isValidEmail(email)) {
+    registerAuthFailure(req, "password_forgot");
+    writeSecurityEvent("auth_password_forgot_failed", req, { reason: "invalid_email", email: securityValue(email, 120) });
+    sendJson(res, 200, { ok: true, message: genericMessage });
+    return;
+  }
+
+  const user = findUserByEmail(email);
+  if (!user) {
+    registerAuthFailure(req, "password_forgot");
+    registerAuthFailure(req, "password_forgot", email);
+    writeSecurityEvent("auth_password_forgot_ignored", req, { email: securityValue(email, 120) });
+    sendJson(res, 200, { ok: true, message: genericMessage });
+    return;
+  }
+
+  try {
+    const token = createPasswordResetTokenForUser(user, req);
+    const resetUrl = buildAppUrl(req, `/reset-password.html?token=${encodeURIComponent(token)}`);
+    const sent = await sendPasswordResetEmail(user.email, resetUrl, user.name || "Usuario");
+
+    if (!sent.sent || process.env.NODE_ENV !== "production") {
+      console.log(`[password-reset] ${user.email} -> ${resetUrl}`);
+    }
+    registerAuthSuccess(req, "password_forgot");
+    registerAuthSuccess(req, "password_forgot", email);
+    writeSecurityEvent("auth_password_forgot_success", req, { userId: user.id, email: securityValue(user.email, 120) });
+    sendJson(res, 200, {
+      ok: true,
+      message: genericMessage
+    });
+  } catch (error) {
+    registerAuthFailure(req, "password_forgot");
+    registerAuthFailure(req, "password_forgot", email);
+    writeSecurityEvent("auth_password_forgot_failed", req, { reason: "send_error", email: securityValue(email, 120) });
+    sendJson(res, 200, { ok: true, message: genericMessage });
+  }
+}
+
+async function handleAuthPasswordReset(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Metodo no permitido" });
+    return;
+  }
+
+  const gateIp = checkAuthRateLimit(req, "password_reset");
+  if (!gateIp.allowed) {
+    writeSecurityEvent("auth_password_reset_rate_limited", req, { retryAfterSec: gateIp.retryAfterSec });
+    sendRateLimited(res, gateIp.retryAfterSec);
+    return;
+  }
+
+  const body = await readJsonBody(req, res);
+  if (body === null) return;
+  const token = String(body?.token || "").trim();
+  const newPassword = String(body?.newPassword || "");
+
+  if (!token) {
+    registerAuthFailure(req, "password_reset");
+    writeSecurityEvent("auth_password_reset_failed", req, { reason: "missing_token" });
+    sendJson(res, 400, { error: "Falta token de restablecimiento" });
+    return;
+  }
+  if (newPassword.length < PASSWORD_MIN_LEN) {
+    registerAuthFailure(req, "password_reset");
+    writeSecurityEvent("auth_password_reset_failed", req, { reason: "weak_password" });
+    sendJson(res, 400, { error: `La contrasena debe tener al menos ${PASSWORD_MIN_LEN} caracteres` });
+    return;
+  }
+
+  cleanupPasswordResetTokens();
+  const checked = verifyPasswordResetToken(token);
+  if (!checked.ok) {
+    registerAuthFailure(req, "password_reset");
+    writeSecurityEvent("auth_password_reset_failed", req, { reason: "invalid_token" });
+    sendJson(res, 400, { error: "Token invalido o expirado" });
+    return;
+  }
+
+  const user = DB.users[String(checked.entry.userId || "")];
+  if (!user) {
+    registerAuthFailure(req, "password_reset");
+    writeSecurityEvent("auth_password_reset_failed", req, { reason: "user_not_found" });
+    sendJson(res, 404, { error: "Usuario no encontrado" });
+    return;
+  }
+
+  setOrUpdateLocalPassword(user, newPassword);
+  user.emailVerificationPending = false;
+  if (!cleanText(user.emailVerifiedAt || "").slice(0, 48)) {
+    user.emailVerifiedAt = nowIso();
+  }
+  DB.users[user.id] = user;
+  saveDatabase();
+  markPasswordResetTokenUsed(checked.tokenId, req);
+  invalidatePasswordResetTokensForUser(user.id, checked.tokenId);
+  invalidateEmailVerifyTokensForUser(user.id);
+  revokeAllSessionsByUserId(user.id);
+  const sessionId = createSession(user.id, req);
+  setSessionCookie(res, sessionId);
+  registerAuthSuccess(req, "password_reset");
+  writeSecurityEvent("auth_password_reset_success", req, {
+    userId: user.id,
+    email: securityValue(user.email, 120)
+  });
+
+  const profile = ensureProfile(user.id);
+  sendJson(res, 200, {
+    ok: true,
+    authenticated: true,
+    user: publicUser(user),
+    stats: profileStats(profile)
+  });
+}
+
+async function handleAuthPasswordChange(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Metodo no permitido" });
+    return;
+  }
+
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+
+  const gateIp = checkAuthRateLimit(req, "password");
+  const gateUser = checkAuthRateLimit(req, "password", auth.user.id);
+  const blockedRetry = Math.max(gateIp.retryAfterSec || 0, gateUser.retryAfterSec || 0);
+  if (!gateIp.allowed || !gateUser.allowed) {
+    writeSecurityEvent("auth_password_change_rate_limited", req, {
+      userId: auth.user.id,
+      retryAfterSec: blockedRetry || 1
+    });
+    sendRateLimited(res, blockedRetry || 1);
+    return;
+  }
+
+  const body = await readJsonBody(req, res);
+  if (body === null) return;
+
+  const currentPassword = String(body?.currentPassword || "");
+  const newPassword = String(body?.newPassword || "");
+
+  if (newPassword.length < PASSWORD_MIN_LEN) {
+    registerAuthFailure(req, "password");
+    registerAuthFailure(req, "password", auth.user.id);
+    writeSecurityEvent("auth_password_change_failed", req, { reason: "weak_password", userId: auth.user.id });
+    sendJson(res, 400, { error: `La contrasena nueva debe tener al menos ${PASSWORD_MIN_LEN} caracteres` });
+    return;
+  }
+  if (currentPassword && currentPassword === newPassword) {
+    registerAuthFailure(req, "password");
+    registerAuthFailure(req, "password", auth.user.id);
+    writeSecurityEvent("auth_password_change_failed", req, { reason: "same_password", userId: auth.user.id });
+    sendJson(res, 400, { error: "La contrasena nueva debe ser diferente de la actual" });
+    return;
+  }
+
+  const user = DB.users[auth.user.id];
+  if (!user) {
+    registerAuthFailure(req, "password");
+    registerAuthFailure(req, "password", auth.user.id);
+    writeSecurityEvent("auth_password_change_failed", req, { reason: "user_not_found", userId: auth.user.id });
+    sendJson(res, 404, { error: "Usuario no encontrado" });
+    return;
+  }
+
+  const hasLocal = Boolean(user.localAuth?.salt && user.localAuth?.hash);
+  if (hasLocal) {
+    if (!currentPassword) {
+      registerAuthFailure(req, "password");
+      registerAuthFailure(req, "password", auth.user.id);
+      writeSecurityEvent("auth_password_change_failed", req, { reason: "missing_current", userId: auth.user.id });
+      sendJson(res, 400, { error: "Falta contrasena actual" });
+      return;
+    }
+    const ok = verifyPassword(currentPassword, user.localAuth.salt, user.localAuth.hash);
+    if (!ok) {
+      registerAuthFailure(req, "password");
+      registerAuthFailure(req, "password", auth.user.id);
+      writeSecurityEvent("auth_password_change_failed", req, { reason: "wrong_current", userId: auth.user.id });
+      sendJson(res, 401, { error: "Contrasena actual incorrecta" });
+      return;
+    }
+  }
+
+  const updated = setOrUpdateLocalPassword(user, newPassword);
+  invalidatePasswordResetTokensForUser(auth.user.id);
+  registerAuthSuccess(req, "password");
+  registerAuthSuccess(req, "password", auth.user.id);
+  writeSecurityEvent("auth_password_change_success", req, { userId: auth.user.id });
+  sendJson(res, 200, {
+    ok: true,
+    message: hasLocal ? "Contrasena actualizada" : "Contrasena configurada",
+    user: publicUser(updated)
+  });
+}
+
+async function handleAuthSessions(req, res) {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { error: "Metodo no permitido" });
+    return;
+  }
+
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+  const items = listActiveSessionsForUser(auth.user.id, auth.sessionId);
+  sendJson(res, 200, { items });
+}
+
+async function handleAuthSessionsRevoke(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Metodo no permitido" });
+    return;
+  }
+
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+
+  const body = await readJsonBody(req, res);
+  if (body === null) return;
+
+  const targetSessionId = String(body?.sessionId || "").trim();
+  if (!targetSessionId) {
+    writeSecurityEvent("auth_session_revoke_failed", req, { reason: "missing_session_id", userId: auth.user.id });
+    sendJson(res, 400, { error: "Falta sessionId" });
+    return;
+  }
+
+  const target = SESSIONS.get(targetSessionId);
+  if (!target || target.userId !== auth.user.id) {
+    writeSecurityEvent("auth_session_revoke_failed", req, { reason: "session_not_found", userId: auth.user.id });
+    sendJson(res, 404, { error: "Sesion no encontrada" });
+    return;
+  }
+
+  const isCurrent = targetSessionId === auth.sessionId;
+  SESSIONS.delete(targetSessionId);
+  persistSessionsSoon();
+
+  if (isCurrent) {
+    clearSessionCookie(res);
+  }
+  writeSecurityEvent("auth_session_revoke_success", req, {
+    userId: auth.user.id,
+    revokedSessionId: targetSessionId,
+    current: isCurrent
+  });
+
+  sendJson(res, 200, {
+    ok: true,
+    revokedSessionId: targetSessionId,
+    signedOut: isCurrent
+  });
+}
+
+async function handleAuthSessionsRevokeOthers(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Metodo no permitido" });
+    return;
+  }
+
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+
+  let removed = 0;
+  for (const [sid, session] of SESSIONS.entries()) {
+    if (!session || session.userId !== auth.user.id) continue;
+    if (sid === auth.sessionId) continue;
+    SESSIONS.delete(sid);
+    removed += 1;
+  }
+  if (removed > 0) persistSessionsSoon();
+  writeSecurityEvent("auth_session_revoke_others", req, { userId: auth.user.id, removed });
+  sendJson(res, 200, { ok: true, removed });
 }
 
 async function handleProfileMe(req, res) {
@@ -1555,9 +2764,15 @@ function serveStatic(res, parsedUrl) {
 }
 
 let DB = loadDatabase();
+loadSessionStore();
+validateSessionSecret();
+cleanupPasswordResetTokens();
+cleanupEmailVerifyTokens();
 
 setInterval(() => {
   pruneExpiredSessions();
+  cleanupPasswordResetTokens();
+  cleanupEmailVerifyTokens();
 }, 5 * 60 * 1000).unref();
 
 const server = http.createServer(async (req, res) => {
@@ -1585,6 +2800,21 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (parsedUrl.pathname === "/api/auth/sessions") {
+      await handleAuthSessions(req, res);
+      return;
+    }
+
+    if (parsedUrl.pathname === "/api/auth/sessions/revoke") {
+      await handleAuthSessionsRevoke(req, res);
+      return;
+    }
+
+    if (parsedUrl.pathname === "/api/auth/sessions/revoke-others") {
+      await handleAuthSessionsRevokeOthers(req, res);
+      return;
+    }
+
     if (parsedUrl.pathname === "/api/auth/google") {
       await handleAuthGoogle(req, res);
       return;
@@ -1602,6 +2832,31 @@ const server = http.createServer(async (req, res) => {
 
     if (parsedUrl.pathname === "/api/auth/logout") {
       await handleAuthLogout(req, res);
+      return;
+    }
+
+    if (parsedUrl.pathname === "/api/auth/email/resend") {
+      await handleAuthEmailResend(req, res);
+      return;
+    }
+
+    if (parsedUrl.pathname === "/api/auth/email/verify") {
+      await handleAuthEmailVerify(req, res);
+      return;
+    }
+
+    if (parsedUrl.pathname === "/api/auth/password/forgot") {
+      await handleAuthPasswordForgot(req, res);
+      return;
+    }
+
+    if (parsedUrl.pathname === "/api/auth/password/reset") {
+      await handleAuthPasswordReset(req, res);
+      return;
+    }
+
+    if (parsedUrl.pathname === "/api/auth/password/change") {
+      await handleAuthPasswordChange(req, res);
       return;
     }
 
@@ -1666,9 +2921,35 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+let shuttingDown = false;
+function shutdownServer(code = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  flushSessionStoreNow();
+  try {
+    server.close(() => {
+      process.exit(code);
+    });
+  } catch {
+    process.exit(code);
+  }
+  setTimeout(() => process.exit(code), 1500).unref();
+}
+
+process.on("SIGINT", () => shutdownServer(0));
+process.on("SIGTERM", () => shutdownServer(0));
+process.on("exit", () => {
+  try {
+    flushSessionStoreNow();
+  } catch {}
+});
+
 server.listen(PORT, () => {
   console.log(`Servidor iniciado en http://localhost:${PORT}`);
   if (!GOOGLE_CLIENT_ID) {
     console.log("Aviso: define GOOGLE_CLIENT_ID para activar login con Google.");
+  }
+  if (process.env.NODE_ENV === "production" && !smtpReady) {
+    console.log("Aviso: configura SMTP_* para habilitar verificacion de correo y recuperacion de contrasena en produccion.");
   }
 });
