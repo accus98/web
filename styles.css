@@ -777,6 +777,7 @@ a {
 }
 
 .card {
+  position: relative;
   border-radius: 16px;
   overflow: hidden;
   background: var(--card);
@@ -789,6 +790,82 @@ a {
 .card:hover {
   transform: translateY(-4px);
   border-color: rgba(7, 215, 167, 0.72);
+}
+
+.card-save-actions {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 3;
+}
+
+.card-save-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  border: 1px solid rgba(152, 174, 210, 0.45);
+  background: rgba(4, 10, 20, 0.78);
+  backdrop-filter: blur(8px);
+  color: #dbe7fb;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition:
+    transform 0.18s ease,
+    border-color 0.18s ease,
+    background 0.18s ease,
+    color 0.18s ease;
+}
+
+.card-save-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.card-save-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(7, 215, 167, 0.66);
+}
+
+.card-save-btn[data-card-save="pending"].active {
+  color: #ffbf86;
+  border-color: rgba(255, 123, 28, 0.74);
+  background: rgba(255, 123, 28, 0.2);
+}
+
+.card-save-btn[data-card-save="favorites"].active {
+  color: #ff8fc3;
+  border-color: rgba(255, 86, 162, 0.76);
+  background: rgba(255, 86, 162, 0.22);
+}
+
+.card-save-btn:focus-visible {
+  outline: 2px solid rgba(7, 215, 167, 0.72);
+  outline-offset: 2px;
+}
+
+.card-save-btn.is-pop {
+  animation: cardSavePop 0.3s ease;
+}
+
+@keyframes cardSavePop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 .card img {

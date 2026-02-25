@@ -752,6 +752,16 @@ function dedupeAnimeList(list) {
 function renderRecommendedSection(history) {
   const favorites = Array.isArray(state.profile?.favorites) ? state.profile.favorites : [];
   const pending = Array.isArray(state.profile?.pending) ? state.profile.pending : [];
+  const favoriteIds = new Set(
+    favorites
+      .map((item) => Number(item?.animeId || 0))
+      .filter(Boolean)
+  );
+  const pendingIds = new Set(
+    pending
+      .map((item) => Number(item?.animeId || 0))
+      .filter(Boolean)
+  );
   const watchedIds = new Set(
     [...(history || []), ...favorites, ...pending]
       .map((item) => Number(item.animeId || 0))
@@ -792,7 +802,9 @@ function renderRecommendedSection(history) {
   }
 
   el.recommendedSection.hidden = false;
-  el.recommendedGrid.innerHTML = ranked.map(cardTemplate).join("");
+  el.recommendedGrid.innerHTML = ranked
+    .map((anime) => cardTemplate(anime, pendingIds, favoriteIds))
+    .join("");
 }
 
 function renderPersonalizedSections() {
@@ -814,6 +826,47 @@ function passGlobalFilter(anime) {
   if (f.status && anime.status !== f.status) return false;
   if (f.score && Number(anime.averageScore || 0) < Number(f.score)) return false;
   return true;
+}
+
+function getProfileAnimeIdSet(listName) {
+  const list = Array.isArray(state.profile?.[listName]) ? state.profile[listName] : [];
+  return new Set(
+    list
+      .map((item) => Number(item?.animeId || 0))
+      .filter(Boolean)
+  );
+}
+
+function buildProfileAnimePayload(anime) {
+  const animeId = Number(anime?.id || 0);
+  if (!animeId) return null;
+  return {
+    animeId,
+    idMal: Number(anime?.idMal || 0),
+    title: pickTitle(anime?.title),
+    cover: bestCover(anime?.coverImage),
+    banner: String(anime?.bannerImage || "").trim(),
+    score: Number(anime?.averageScore || 0),
+    status: String(anime?.status || "").trim(),
+    episodes: Number(anime?.episodes || 0),
+    seasonYear: Number(anime?.seasonYear || 0),
+    genres: Array.isArray(anime?.genres) ? anime.genres.slice(0, 8) : []
+  };
+}
+
+function findLoadedAnimeById(animeId) {
+  const id = Number(animeId || 0);
+  if (!id) return null;
+  const pool = dedupeAnimeList([
+    ...state.searchRows,
+    ...state.trending,
+    ...state.season,
+    ...state.top,
+    ...state.rawTrending,
+    ...state.rawSeason,
+    ...state.rawTop
+  ]);
+  return pool.find((anime) => Number(anime?.id || 0) === id) || null;
 }
 
 function hasGlobalFilterActive() {
@@ -906,18 +959,22 @@ function filterTrending(list, filter) {
 }
 
 function renderTrending() {
+  const favoriteIds = getProfileAnimeIdSet("favorites");
+  const pendingIds = getProfileAnimeIdSet("pending");
   const filtered = filterTrending(state.trending, state.trendingFilter).filter(passGlobalFilter);
   el.trendingGrid.innerHTML = filtered.length
-    ? filtered.map(cardTemplate).join("")
+    ? filtered.map((anime) => cardTemplate(anime, pendingIds, favoriteIds)).join("")
     : `<p>${noResultsText("tendencias", state.trending)}</p>`;
   lazyLoadImages();
   initReveal();
 }
 
 function renderSeason() {
+  const favoriteIds = getProfileAnimeIdSet("favorites");
+  const pendingIds = getProfileAnimeIdSet("pending");
   const filtered = state.season.filter(passGlobalFilter);
   el.seasonGrid.innerHTML = filtered.length
-    ? filtered.map(seasonTemplate).join("")
+    ? filtered.map((anime) => seasonTemplate(anime, pendingIds, favoriteIds)).join("")
     : `<p>${noResultsText("temporada", state.season)}</p>`;
 }
 
@@ -945,12 +1002,57 @@ function hydrateGlobalGenres() {
   if (value) el.globalGenre.value = value;
 }
 
-function cardTemplate(anime) {
+function cardSaveActionsTemplate(anime, pendingIds, favoriteIds) {
+  const animeId = Number(anime?.id || 0);
+  if (!animeId) return "";
+  const title = pickTitle(anime?.title);
+  const pendingActive = pendingIds?.has(animeId);
+  const favoriteActive = favoriteIds?.has(animeId);
+  const pendingLabel = pendingActive
+    ? `Quitar ${title} de ver mas tarde`
+    : `Guardar ${title} para ver mas tarde`;
+  const favoriteLabel = favoriteActive
+    ? `Quitar ${title} de favoritos`
+    : `Guardar ${title} en favoritos`;
+  return `
+    <div class="card-save-actions">
+      <button
+        class="card-save-btn ${favoriteActive ? "active" : ""}"
+        type="button"
+        data-card-save="favorites"
+        data-anime-id="${animeId}"
+        aria-pressed="${favoriteActive ? "true" : "false"}"
+        aria-label="${esc(favoriteLabel)}"
+        title="${esc(favoriteLabel)}"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 21s-6.7-4.4-9.2-7.1c-2.5-2.8-2.5-7 .2-9.8a5.55 5.55 0 0 1 7.9 0L12 5.2l1.1-1.1a5.55 5.55 0 0 1 7.9 0c2.7 2.8 2.7 7 .2 9.8C18.7 16.6 12 21 12 21z"></path>
+        </svg>
+      </button>
+      <button
+        class="card-save-btn ${pendingActive ? "active" : ""}"
+        type="button"
+        data-card-save="pending"
+        data-anime-id="${animeId}"
+        aria-pressed="${pendingActive ? "true" : "false"}"
+        aria-label="${esc(pendingLabel)}"
+        title="${esc(pendingLabel)}"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"></path>
+        </svg>
+      </button>
+    </div>
+  `;
+}
+
+function cardTemplate(anime, pendingIds = null, favoriteIds = null) {
   const title = esc(pickTitle(anime.title));
   const image = bestCover(anime.coverImage);
   const srcset = coverSrcSet(anime.coverImage);
   return `
   <article class="card reveal" data-id="${anime.id}">
+    ${cardSaveActionsTemplate(anime, pendingIds, favoriteIds)}
     <img data-src="${esc(image)}" data-srcset="${srcset}" data-sizes="(max-width: 760px) 50vw, (max-width: 1200px) 25vw, 280px" alt="${title}" loading="lazy" />
     <div class="card-body">
       <h3>${title}</h3>
@@ -963,12 +1065,13 @@ function cardTemplate(anime) {
   </article>`;
 }
 
-function seasonTemplate(anime) {
+function seasonTemplate(anime, pendingIds = null, favoriteIds = null) {
   const title = esc(pickTitle(anime.title));
   const image = anime.bannerImage || bestCover(anime.coverImage);
   const srcset = coverSrcSet(anime.coverImage);
   return `
   <article class="card reveal" data-id="${anime.id}">
+    ${cardSaveActionsTemplate(anime, pendingIds, favoriteIds)}
     <img data-src="${esc(image)}" data-srcset="${srcset}" data-sizes="(max-width: 980px) 100vw, 33vw" alt="${title}" loading="lazy" />
     <div class="card-body">
       <h3>${title}</h3>
@@ -1444,6 +1547,61 @@ async function runSearch() {
   }
 }
 
+function animateCardSaveButton(button) {
+  if (!button) return;
+  button.classList.remove("is-pop");
+  // Forzar reflow para reiniciar la animacion.
+  void button.offsetWidth;
+  button.classList.add("is-pop");
+  setTimeout(() => button.classList.remove("is-pop"), 320);
+}
+
+function syncCardSaveButtonState(listName, animeId, isActive) {
+  const selector = `[data-card-save="${listName}"][data-anime-id="${animeId}"]`;
+  const onLabel = listName === "pending" ? "Quitar de ver mas tarde" : "Quitar de favoritos";
+  const offLabel = listName === "pending" ? "Guardar para ver mas tarde" : "Guardar en favoritos";
+  document.querySelectorAll(selector).forEach((btn) => {
+    btn.classList.toggle("active", Boolean(isActive));
+    btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+    btn.setAttribute("aria-label", isActive ? onLabel : offLabel);
+    btn.setAttribute("title", isActive ? onLabel : offLabel);
+  });
+}
+
+async function toggleCardList(listName, animeId, triggerButton = null) {
+  const labels = {
+    pending: "Ver mas tarde",
+    favorites: "Favoritos"
+  };
+  if (!window.YVAuth?.requireAuth?.(`Inicia sesion para guardar animes en ${labels[listName] || "tu lista"}.`)) return;
+  const anime = findLoadedAnimeById(animeId);
+  if (!anime) return;
+  const payload = buildProfileAnimePayload(anime);
+  if (!payload) return;
+
+  animateCardSaveButton(triggerButton);
+
+  try {
+    const json = await requestJson("/api/profile/list/toggle", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        list: listName,
+        anime: payload
+      })
+    });
+    const active = Boolean(json?.added);
+    if (json?.profile) {
+      state.profile = json.profile;
+    }
+    syncCardSaveButtonState(listName, animeId, active);
+  } catch (error) {
+    console.warn(`No se pudo actualizar ${listName}`, error);
+  }
+}
+
 function bindEvents() {
   const applyGlobalFilterFromInputs = async () => {
     state.globalFilter = {
@@ -1569,6 +1727,18 @@ function bindEvents() {
     const insideSearch = el.searchShell?.contains(e.target);
     if (!insideSearch) {
       clearSearchResults();
+    }
+
+    const saveBtn = e.target.closest("[data-card-save]");
+    if (saveBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const listName = String(saveBtn.dataset.cardSave || "").trim();
+      const animeId = Number(saveBtn.dataset.animeId || 0);
+      if ((listName === "pending" || listName === "favorites") && animeId) {
+        void toggleCardList(listName, animeId, saveBtn);
+      }
+      return;
     }
 
     const clickable = e.target.closest("[data-id], [data-external]");
