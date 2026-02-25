@@ -56,7 +56,8 @@ const state = {
   globalFilter: { genre: "", status: "", score: "" },
   trendingFilter: "all",
   filterRequestId: 0,
-  imageEnhanceRequestId: 0
+  imageEnhanceRequestId: 0,
+  searchRows: []
 };
 
 const imageQualityCache = new Map();
@@ -64,6 +65,7 @@ const imageMetaCache = new Map();
 let heroCycleTimer = null;
 let heroCycleToken = 0;
 let searchHeroToken = 0;
+let anilistProxyBackoffUntil = 0;
 const CONTINUE_KEY = "yv_continue_v1";
 const MAX_CONTINUE_ITEMS = 24;
 
@@ -222,7 +224,7 @@ query FilteredHome(
 
 const searchQuery = `
 query SearchAnime($search: String) {
-  Page(page: 1, perPage: 6) {
+  Page(page: 1, perPage: 12) {
     media(type: ANIME, sort: POPULARITY_DESC, search: $search) {
       id
       idMal
@@ -231,6 +233,7 @@ query SearchAnime($search: String) {
       seasonYear
       episodes
       coverImage { extraLarge large medium }
+      bannerImage
     }
   }
 }
@@ -277,8 +280,13 @@ async function requestAniList(query, variables = {}) {
       },
       body: JSON.stringify({ query, variables })
     });
-    if (!r.ok) throw new Error(`AniList ${r.status}`);
-    const json = await r.json();
+    const json = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const error = new Error(`AniList ${r.status}`);
+      error.status = Number(r.status || 0);
+      error.payload = json;
+      throw error;
+    }
     if (json.errors) throw new Error(json.errors[0]?.message || "GraphQL error");
     return json.data;
   };
@@ -288,9 +296,18 @@ async function requestAniList(query, variables = {}) {
   }
 
   try {
+    if (Date.now() < anilistProxyBackoffUntil) {
+      const waitError = new Error("AniList 429");
+      waitError.status = 429;
+      throw waitError;
+    }
     return await requestAniListFrom(PROXY_ANILIST_URL);
-  } catch {
-    return requestAniListFrom(DIRECT_ANILIST_URL);
+  } catch (error) {
+    const status = Number(error?.status || 0);
+    if (status === 429) {
+      anilistProxyBackoffUntil = Date.now() + 4500;
+    }
+    throw error;
   }
 }
 
@@ -379,30 +396,50 @@ function loadImageMeta(url) {
   return promise;
 }
 
+function scoreHeroCandidate(item) {
+  const width = Number(item?.width || 0);
+  const height = Number(item?.height || 0);
+  if (!width || !height) return 0;
+  const area = width * height;
+  const ratio = width / Math.max(1, height);
+  const ratioPenalty = Math.min(1, Math.abs(ratio - 1.78));
+  const bannerBoost = item.kind === "banner" ? 220_000 : 0;
+  const hdBoost = width >= 1900 ? 320_000 : width >= 1500 ? 190_000 : width >= 1200 ? 95_000 : 0;
+  const penalty = ratioPenalty * 180_000;
+  return area + bannerBoost + hdBoost - penalty;
+}
+
 async function pickHeroImages(animes) {
-  const bannerCandidates = uniqueUrls((animes || []).map((a) => a.bannerImage), 16);
-  const coverCandidates = uniqueUrls((animes || []).map((a) => bestCover(a.coverImage)), 16);
-  const combined = uniqueUrls([...bannerCandidates, ...coverCandidates], 16);
+  const bannerCandidates = uniqueUrls((animes || []).map((a) => a.bannerImage), 24);
+  const coverCandidates = uniqueUrls((animes || []).map((a) => bestCover(a.coverImage)), 24);
+  const combined = [
+    ...bannerCandidates.map((url) => ({ url, kind: "banner" })),
+    ...coverCandidates.map((url) => ({ url, kind: "cover" }))
+  ];
   if (!combined.length) return [];
 
   const checked = await Promise.all(
-    combined.map(async (url) => ({
-      url,
-      ...(await loadImageMeta(url))
+    combined.map(async (item) => ({
+      ...item,
+      ...(await loadImageMeta(item.url))
     }))
   );
 
-  const strong = checked
-    .filter((item) => item.width >= 1200 && item.height >= 450)
-    .map((item) => item.url);
-  if (strong.length) return strong.slice(0, 8);
+  const ranked = checked
+    .map((item) => ({ ...item, score: scoreHeroCandidate(item) }))
+    .filter((item) => item.width >= 960 && item.height >= 340)
+    .sort((a, b) => b.score - a.score);
+  if (ranked.length) {
+    return uniqueUrls(ranked.map((item) => item.url), 10);
+  }
 
-  const acceptable = checked
-    .filter((item) => item.width >= 900 && item.height >= 320)
+  const fallback = checked
+    .filter((item) => item.width >= 760 && item.height >= 280)
+    .sort((a, b) => b.width * b.height - a.width * a.height)
     .map((item) => item.url);
-  if (acceptable.length) return acceptable.slice(0, 8);
+  if (fallback.length) return uniqueUrls(fallback, 10);
 
-  return combined.slice(0, 8);
+  return uniqueUrls(combined.map((item) => item.url), 10);
 }
 
 function canUseProxyApis() {
@@ -967,8 +1004,13 @@ function searchItemTemplate(anime, idx = 0) {
   const image = bestCover(anime.coverImage);
   const srcset = coverSrcSet(anime.coverImage);
   const delay = Math.max(0, Math.min(7, Number(idx || 0))) * 34;
+  const animeId = Number(anime?.id || 0);
+  const externalUrl = String(anime?.externalUrl || "").trim();
+  const targetAttr = animeId > 0
+    ? `data-id="${animeId}"`
+    : (externalUrl ? `data-external="${esc(externalUrl)}"` : "");
   return `
-  <article class="search-item" data-id="${anime.id}" style="--si-delay:${delay}ms">
+  <article class="search-item" ${targetAttr} style="--si-delay:${delay}ms">
     <img data-src="${esc(image)}" data-srcset="${srcset}" data-sizes="58px" alt="${title}" loading="lazy" />
     <div>
       <h3>${title}</h3>
@@ -1144,6 +1186,41 @@ async function syncHeroWithSearch(rows, term) {
   }
 }
 
+function searchAnimeById(id) {
+  const animeId = Number(id || 0);
+  if (!animeId) return null;
+  return state.searchRows.find((anime) => Number(anime?.id || 0) === animeId) || null;
+}
+
+async function previewSearchHoverHero(animeId) {
+  const anime = searchAnimeById(animeId);
+  if (!anime) return;
+  const token = ++searchHeroToken;
+  stopHeroCycle();
+
+  const immediate = String(anime.bannerImage || bestCover(anime.coverImage) || "").trim();
+  if (immediate) {
+    setHeroImage(immediate);
+  }
+
+  const candidates = await pickHeroImages([anime]);
+  if (token !== searchHeroToken) return;
+
+  const heroImage = String(candidates[0] || immediate || "").trim();
+  if (heroImage) {
+    setHeroImage(heroImage);
+  }
+}
+
+function restoreHeroFromActiveSearch() {
+  activeSearchHoverId = 0;
+  if (!state.searchRows.length) {
+    restoreDefaultHeroFromHome();
+    return;
+  }
+  void syncHeroWithSearch(state.searchRows, el.searchInput.value.trim());
+}
+
 function openAnimeTab(id, episode = 0) {
   const params = new URLSearchParams();
   params.set("id", String(id));
@@ -1156,6 +1233,13 @@ function openAnimeTab(id, episode = 0) {
 let searchTimer = null;
 let globalFilterTimer = null;
 let clearSearchTimer = null;
+let activeSearchHoverId = 0;
+let searchRequestId = 0;
+let lastResolvedSearchTerm = "";
+const searchResultsCache = new Map();
+const SEARCH_CACHE_TTL_MS = 6 * 60 * 1000;
+const SEARCH_DEBOUNCE_MS = 220;
+const SEARCH_REMOTE_MIN_CHARS = 3;
 
 function openSearchResults() {
   if (!el.searchResults) return;
@@ -1181,32 +1265,181 @@ function renderSearchMessage(message) {
   openSearchResults();
 }
 
+function getCachedSearchRows(term) {
+  const key = normalizeSearchText(term);
+  if (!key) return null;
+  const entry = searchResultsCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - Number(entry.ts || 0) > SEARCH_CACHE_TTL_MS) {
+    searchResultsCache.delete(key);
+    return null;
+  }
+  return Array.isArray(entry.rows) ? entry.rows : null;
+}
+
+function setCachedSearchRows(term, rows) {
+  const key = normalizeSearchText(term);
+  if (!key || !Array.isArray(rows) || !rows.length) return;
+  searchResultsCache.set(key, { rows, ts: Date.now() });
+}
+
+function renderSearchRows(rows, term, reqId) {
+  if (reqId !== searchRequestId) return false;
+  const nextRows = Array.isArray(rows) ? rows.slice(0, 8) : [];
+  state.searchRows = nextRows;
+  lastResolvedSearchTerm = normalizeSearchText(term);
+  activeSearchHoverId = 0;
+  if (!nextRows.length) {
+    el.searchResults.innerHTML = "";
+    return false;
+  }
+  el.searchResults.innerHTML = nextRows.map((row, idx) => searchItemTemplate(row, idx)).join("");
+  openSearchResults();
+  lazyLoadImages();
+  void syncHeroWithSearch(nextRows, term);
+  return true;
+}
+
 function clearSearchResults() {
+  activeSearchHoverId = 0;
   closeSearchResults(true);
+}
+
+function fallbackSearchFromLoadedData(term) {
+  const needle = normalizeSearchText(term);
+  if (!needle) return [];
+  const pool = dedupeAnimeList([...state.trending, ...state.season, ...state.top]);
+  return pool
+    .filter((anime) => animeTitleCandidates(anime).some((title) => title.includes(needle)))
+    .sort((a, b) => Number(b?.averageScore || 0) - Number(a?.averageScore || 0))
+    .slice(0, 10);
+}
+
+function mapJikanSearchItem(item) {
+  const idMal = Number(item?.mal_id || 0);
+  const titleEnglish = String(item?.title_english || "").trim();
+  const titleRomaji = String(item?.title || "").trim();
+  const titleNative = String(item?.title_japanese || "").trim();
+  const score = Number(item?.score || 0);
+  const year = Number(item?.year || 0);
+  const episodes = Number(item?.episodes || 0);
+  const webp = item?.images?.webp || {};
+  const jpg = item?.images?.jpg || {};
+  const cover =
+    String(webp?.large_image_url || jpg?.large_image_url || webp?.image_url || jpg?.image_url || "").trim();
+  const banner = String(
+    item?.trailer?.images?.maximum_image_url ||
+      item?.trailer?.images?.large_image_url ||
+      item?.trailer?.images?.medium_image_url ||
+      cover
+  ).trim();
+  const externalUrl = String(item?.url || (idMal ? `https://myanimelist.net/anime/${idMal}` : "")).trim();
+
+  return {
+    id: 0,
+    idMal,
+    title: {
+      english: titleEnglish,
+      romaji: titleRomaji,
+      native: titleNative
+    },
+    averageScore: Number.isFinite(score) && score > 0 ? Math.round(score * 10) : 0,
+    seasonYear: Number.isFinite(year) && year > 0 ? year : 0,
+    episodes: Number.isFinite(episodes) && episodes > 0 ? episodes : 0,
+    coverImage: {
+      extraLarge: cover,
+      large: cover,
+      medium: cover
+    },
+    bannerImage: banner || "",
+    externalUrl
+  };
+}
+
+async function requestJikanSearch(term) {
+  if (window.location.protocol === "file:") return [];
+  const q = String(term || "").trim();
+  if (!q) return [];
+
+  const url = new URL("/api/jikan/anime", window.location.origin);
+  url.searchParams.set("q", q);
+  url.searchParams.set("limit", "10");
+  url.searchParams.set("sfw", "true");
+  url.searchParams.set("order_by", "members");
+  url.searchParams.set("sort", "desc");
+
+  const r = await fetch(url.toString(), { headers: { Accept: "application/json" } });
+  if (!r.ok) throw new Error(`Jikan ${r.status}`);
+  const json = await r.json().catch(() => ({}));
+  const rows = Array.isArray(json?.data) ? json.data.map(mapJikanSearchItem) : [];
+  return rows.filter((row) => pickTitle(row.title) !== "Anime");
 }
 
 async function runSearch() {
   const term = el.searchInput.value.trim();
+  const normalizedTerm = normalizeSearchText(term);
   if (term.length < 2) {
+    state.searchRows = [];
+    lastResolvedSearchTerm = "";
+    searchRequestId += 1;
     clearSearchResults();
     restoreDefaultHeroFromHome();
     return;
   }
-  renderSearchMessage("Buscando...");
+
+  const reqId = ++searchRequestId;
+  const localRows = fallbackSearchFromLoadedData(term).slice(0, 8);
+  const hasLocalRows = renderSearchRows(localRows, term, reqId);
+
+  if (term.length < SEARCH_REMOTE_MIN_CHARS) {
+    if (!hasLocalRows) renderSearchMessage("Sigue escribiendo para buscar.");
+    return;
+  }
+
+  const cachedRows = getCachedSearchRows(normalizedTerm);
+  if (cachedRows?.length) {
+    renderSearchRows(cachedRows, term, reqId);
+    return;
+  }
+
+  if (!hasLocalRows) {
+    renderSearchMessage("Buscando...");
+  }
+
   try {
     const data = await requestAniList(searchQuery, { search: term });
-    let rows = data.Page?.media || [];
-    rows = await enhanceSearchRowsImageQuality(rows);
+    if (reqId !== searchRequestId) return;
+    let rows = (data.Page?.media || []).slice(0, 8);
+    try {
+      rows = await enhanceSearchRowsImageQuality(rows);
+    } catch (error) {
+      console.warn("Search image enhancement failed", error);
+    }
+    if (reqId !== searchRequestId) return;
     rows = rows.slice(0, 8);
-    el.searchResults.innerHTML = rows.length ? rows.map((row, idx) => searchItemTemplate(row, idx)).join("") : "";
-    await syncHeroWithSearch(rows, term);
     if (!rows.length) {
-      renderSearchMessage("Sin resultados.");
+      if (!hasLocalRows) renderSearchMessage("Sin resultados.");
       return;
     }
-    openSearchResults();
-    lazyLoadImages();
-  } catch {
+    setCachedSearchRows(normalizedTerm, rows);
+    renderSearchRows(rows, term, reqId);
+  } catch (error) {
+    if (hasLocalRows) return;
+    if (reqId !== searchRequestId) return;
+    let fallbackRows = fallbackSearchFromLoadedData(term);
+    if (!fallbackRows.length) {
+      try {
+        fallbackRows = await requestJikanSearch(term);
+      } catch {}
+    }
+    if (fallbackRows.length) {
+      renderSearchRows(fallbackRows, term, reqId);
+      return;
+    }
+    if (Number(error?.status || 0) === 429) {
+      renderSearchMessage("AniList esta ocupado. Reintenta en unos segundos.");
+      return;
+    }
     renderSearchMessage("No se pudo buscar ahora.");
   }
 }
@@ -1261,7 +1494,7 @@ function bindEvents() {
   }
   el.searchInput.addEventListener("input", () => {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(runSearch, 320);
+    searchTimer = setTimeout(runSearch, SEARCH_DEBOUNCE_MS);
   });
   el.searchInput.addEventListener("focus", () => {
     if (el.searchResults.innerHTML.trim()) openSearchResults();
@@ -1271,6 +1504,17 @@ function bindEvents() {
     if (e.key === "Escape") clearSearchResults();
   });
   el.searchBtn.addEventListener("click", runSearch);
+  el.searchResults.addEventListener("mouseover", (e) => {
+    const item = e.target.closest(".search-item");
+    if (!item || !el.searchResults.contains(item)) return;
+    const hoveredId = Number(item.dataset.id || 0);
+    if (!hoveredId || hoveredId === activeSearchHoverId) return;
+    activeSearchHoverId = hoveredId;
+    void previewSearchHoverHero(hoveredId);
+  });
+  el.searchResults.addEventListener("mouseleave", () => {
+    restoreHeroFromActiveSearch();
+  });
 
   el.quickFilters.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-filter]");
@@ -1327,7 +1571,7 @@ function bindEvents() {
       clearSearchResults();
     }
 
-    const clickable = e.target.closest("[data-id]");
+    const clickable = e.target.closest("[data-id], [data-external]");
     if (!clickable) return;
     if (
       e.target.closest(".card") ||
@@ -1336,6 +1580,11 @@ function bindEvents() {
       e.target.closest(".continue-card")
     ) {
       if (e.target.closest(".search-item")) clearSearchResults();
+      const external = String(clickable.dataset.external || "").trim();
+      if (external) {
+        window.open(external, "_blank", "noopener");
+        return;
+      }
       openAnimeTab(clickable.dataset.id, clickable.dataset.ep);
     }
   });

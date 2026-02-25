@@ -81,7 +81,14 @@ async function startFixture(t) {
     APP_BASE_URL: baseUrl,
     SESSION_SECRET: "test_session_secret_abcdefghijklmnopqrstuvwxyz_12345",
     NODE_ENV: "test",
-    YV_DATA_DIR: dataDir
+    YV_DATA_DIR: dataDir,
+    // Evita enviar correos reales durante tests locales.
+    SMTP_HOST: "",
+    SMTP_PORT: "",
+    SMTP_SECURE: "",
+    SMTP_USER: "",
+    SMTP_PASS: "",
+    SMTP_FROM: ""
   };
 
   const proc = spawn(process.execPath, ["server.js"], {

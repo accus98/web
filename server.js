@@ -290,6 +290,41 @@ function cleanUrl(value) {
   return url;
 }
 
+function decodeJwtPayload(token) {
+  const raw = String(token || "").trim();
+  if (!raw) return {};
+  const parts = raw.split(".");
+  if (parts.length < 2) return {};
+  let payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+  const mod = payload.length % 4;
+  if (mod) payload += "=".repeat(4 - mod);
+  try {
+    const decoded = Buffer.from(payload, "base64").toString("utf8");
+    const json = JSON.parse(decoded);
+    return json && typeof json === "object" ? json : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeGooglePicture(value) {
+  const input = cleanUrl(value);
+  if (!input) return "";
+  try {
+    const u = new URL(input);
+    const host = String(u.hostname || "").toLowerCase();
+    const isGoogleHost = host.endsWith("googleusercontent.com") || host.endsWith("gstatic.com");
+    const out = isGoogleHost
+      ? input
+          .replace(/=s\d+-c(?=(&|$))/i, "=s256-c")
+          .replace(/=s\d+(?=(&|$))/i, "=s256-c")
+      : input;
+    return cleanUrl(out);
+  } catch {
+    return input;
+  }
+}
+
 function normalizeEmail(email) {
   return String(email || "")
     .trim()
@@ -1620,11 +1655,13 @@ function setOrUpdateLocalPassword(user, nextPassword) {
   return user;
 }
 
-function upsertGoogleUser(payload) {
+function upsertGoogleUser(payload, hints = {}) {
   const googleSub = String(payload?.sub || "").trim();
   const email = normalizeEmail(payload?.email || "");
-  const displayName = normalizeDisplayName(payload?.name || email.split("@")[0] || "Usuario");
-  const picture = cleanUrl(payload?.picture || "");
+  const hintName = normalizeDisplayName(hints?.name || "");
+  const displayName = normalizeDisplayName(payload?.name || hintName || email.split("@")[0] || "Usuario");
+  const hintedPicture = normalizeGooglePicture(hints?.picture || "");
+  const payloadPicture = normalizeGooglePicture(payload?.picture || "");
 
   if (!googleSub || !email) {
     throw new Error("Payload Google invalido");
@@ -1637,6 +1674,8 @@ function upsertGoogleUser(payload) {
   const previous = DB.users[userId] || null;
   const createdAt = previous?.createdAt || nowIso();
   const providers = normalizeProviders([...(previous?.authProviders || []), "google", previous?.localAuth ? "local" : ""]);
+  const previousPicture = cleanUrl(previous?.picture || "");
+  const picture = payloadPicture || hintedPicture || previousPicture || "";
 
   const user = {
     ...(previous || {}),
@@ -1835,16 +1874,16 @@ function buildJikanImagePayload(idMal, data) {
 }
 
 async function getBestImagesByMalId(idMal) {
-  const cacheKey = `imageq:v1:${idMal}`;
+  const cacheKey = `imageq:v3:${idMal}`;
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
 
   const fullUrl = `${JIKAN_URL}/anime/${encodeURIComponent(idMal)}/full`;
   const upstream = await fetchJson(fullUrl, { headers: { Accept: "application/json" } });
   if (!upstream.ok || !upstream.json?.data) {
-    const empty = { idMal, cover: "", banner: "", thumb: "", qualityScore: 0, source: "none" };
-    cacheSet(cacheKey, empty, 12 * 60 * 60_000);
-    return empty;
+    const payload = { idMal, cover: "", banner: "", thumb: "", qualityScore: 0, source: "none" };
+    cacheSet(cacheKey, payload, 12 * 60 * 60_000);
+    return payload;
   }
 
   const payload = buildJikanImagePayload(idMal, upstream.json.data);
@@ -1920,6 +1959,7 @@ async function handleAuthGoogle(req, res) {
   }
 
   try {
+    const decodedPayload = decodeJwtPayload(credential);
     const ticket = await googleClient.verifyIdToken({
       idToken: credential,
       audience: GOOGLE_CLIENT_ID
@@ -1940,7 +1980,10 @@ async function handleAuthGoogle(req, res) {
       return;
     }
 
-    const user = upsertGoogleUser(payload);
+    const user = upsertGoogleUser(payload, {
+      name: decodedPayload?.name || payload?.name || "",
+      picture: decodedPayload?.picture || payload?.picture || ""
+    });
     const sessionId = createSession(user.id, req);
     setSessionCookie(res, sessionId);
     registerAuthSuccess(req, "google");
@@ -2908,14 +2951,86 @@ async function handleImageQuality(req, res) {
   const body = await readJsonBody(req, res);
   if (body === null) return;
 
-  const ids = toPositiveIntArray(body?.ids, 40);
+  const ids = toPositiveIntArray(body?.ids, 18);
   if (!ids.length) {
     sendJson(res, 200, { items: [] });
     return;
   }
 
-  const items = await mapLimit(ids, 4, async (idMal) => getBestImagesByMalId(idMal));
+  const items = await mapLimit(ids, 2, async (idMal) => getBestImagesByMalId(idMal));
   sendJson(res, 200, { items: items.filter(Boolean) });
+}
+
+function isAllowedAvatarHost(hostname) {
+  const host = String(hostname || "").toLowerCase().trim();
+  if (!host) return false;
+  return (
+    host.endsWith("googleusercontent.com") ||
+    host.endsWith("ggpht.com") ||
+    host.endsWith("gstatic.com")
+  );
+}
+
+async function handleAvatarProxy(req, res, parsedUrl) {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { error: "Metodo no permitido" });
+    return;
+  }
+
+  const raw = cleanUrl(parsedUrl.searchParams.get("u") || parsedUrl.searchParams.get("url") || "");
+  if (!raw) {
+    sendJson(res, 400, { error: "Avatar invalido" });
+    return;
+  }
+
+  let target;
+  try {
+    target = new URL(raw);
+  } catch {
+    sendJson(res, 400, { error: "Avatar invalido" });
+    return;
+  }
+
+  if (target.protocol !== "https:") {
+    sendJson(res, 400, { error: "Avatar invalido" });
+    return;
+  }
+
+  if (!isAllowedAvatarHost(target.hostname)) {
+    sendJson(res, 403, { error: "Host de avatar no permitido" });
+    return;
+  }
+
+  try {
+    const response = await fetch(target.toString(), {
+      method: "GET",
+      headers: {
+        Accept: "image/*",
+        "User-Agent": "YumeVerse/1.0"
+      }
+    });
+
+    if (!response.ok) {
+      sendJson(res, 502, { error: "No se pudo obtener el avatar" });
+      return;
+    }
+
+    const contentType = String(response.headers.get("content-type") || "image/jpeg").toLowerCase();
+    if (!contentType.startsWith("image/")) {
+      sendJson(res, 415, { error: "Contenido de avatar invalido" });
+      return;
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Content-Length": String(buffer.length),
+      "Cache-Control": "public, max-age=86400, stale-while-revalidate=43200"
+    });
+    res.end(buffer);
+  } catch {
+    sendJson(res, 502, { error: "No se pudo obtener el avatar" });
+  }
 }
 
 function safeFilePath(urlPath) {
@@ -2981,6 +3096,11 @@ const server = http.createServer(async (req, res) => {
 
     if (parsedUrl.pathname === "/api/config") {
       await handleConfig(req, res);
+      return;
+    }
+
+    if (parsedUrl.pathname === "/api/avatar") {
+      await handleAvatarProxy(req, res, parsedUrl);
       return;
     }
 

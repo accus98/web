@@ -145,6 +145,21 @@
     el.authPassword.placeholder = hint;
   }
 
+  function initialsFromName(name) {
+    return String(name || "")
+      .split(" ")
+      .map((chunk) => chunk.trim()[0] || "")
+      .join("")
+      .slice(0, 2)
+      .toUpperCase();
+  }
+
+  function toAvatarProxyUrl(url) {
+    const raw = String(url || "").trim();
+    if (!/^https?:\/\//i.test(raw)) return "";
+    return `/api/avatar?u=${encodeURIComponent(raw)}`;
+  }
+
   function updateHeaderUI() {
     const authenticated = isAuthenticated();
     const userName = state.session?.user?.name || "";
@@ -166,19 +181,9 @@
     }
 
     if (el.profileLogo) {
-      if (authenticated && !userPicture) {
-        const label = userName
-          .split(" ")
-          .map((chunk) => chunk.trim()[0] || "")
-          .join("")
-          .slice(0, 2)
-          .toUpperCase();
-        el.profileLogo.textContent = label || "YV";
-        el.profileLogo.hidden = false;
-      } else {
-        el.profileLogo.textContent = "YV";
-        el.profileLogo.hidden = false;
-      }
+      const label = authenticated ? initialsFromName(userName) || "YV" : "YV";
+      el.profileLogo.textContent = label;
+      el.profileLogo.hidden = false;
     }
 
     if (el.profileLabel) {
@@ -192,13 +197,33 @@
     }
 
     if (el.profileAvatar) {
-      if (authenticated && userPicture) {
-        el.profileAvatar.src = userPicture;
-        el.profileAvatar.hidden = false;
-        if (el.profileLogo) el.profileLogo.hidden = true;
-      } else {
+      const proxiedAvatar = authenticated ? toAvatarProxyUrl(userPicture) : "";
+      if (!proxiedAvatar) {
         el.profileAvatar.hidden = true;
         el.profileAvatar.removeAttribute("src");
+        delete el.profileAvatar.dataset.src;
+      } else {
+        const showAvatar = () => {
+          el.profileAvatar.hidden = false;
+          if (el.profileLogo) el.profileLogo.hidden = true;
+        };
+        const hideAvatar = () => {
+          el.profileAvatar.hidden = true;
+          if (el.profileLogo) el.profileLogo.hidden = false;
+        };
+
+        el.profileAvatar.decoding = "async";
+        el.profileAvatar.referrerPolicy = "no-referrer";
+        el.profileAvatar.onload = showAvatar;
+        el.profileAvatar.onerror = hideAvatar;
+
+        if (el.profileAvatar.dataset.src !== proxiedAvatar) {
+          el.profileAvatar.hidden = true;
+          el.profileAvatar.dataset.src = proxiedAvatar;
+          el.profileAvatar.src = proxiedAvatar;
+        } else if (el.profileAvatar.complete && el.profileAvatar.naturalWidth > 0) {
+          showAvatar();
+        }
       }
     }
   }
