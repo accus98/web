@@ -1,4 +1,5 @@
 node_modules/
 .yv-data/
+player-media/
 .env
 .env.local
