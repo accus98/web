@@ -4,6 +4,8 @@ const DIRECT_JIKAN_URL = "https://api.jikan.moe/v4";
 const PROXY_JIKAN_URL = "/api/jikan";
 const PROXY_SYNOPSIS_URL = "/api/synopsis";
 const PROXY_IMAGE_QUALITY_URL = "/api/image-quality";
+const PROXY_LIBRARY_EPISODES_URL = "/api/library/episodes";
+const PROXY_LIBRARY_REQUEST_URL = "/api/library/request";
 
 const STATUS_MAP = {
   FINISHED: "Finalizado",
@@ -76,9 +78,10 @@ const state = {
   anime: null,
   synopsisEs: "",
   episodes: [],
+  libraryEpisodes: [],
   requestedEpisode: 1,
   currentEpisodeIndex: 0,
-  currentServer: SERVERS[0],
+  currentServer: "",
   comments: [],
   session: { authenticated: false },
   favoriteActive: false,
@@ -89,6 +92,9 @@ const bannerMetaCache = new Map();
 let headerBackdropToken = 0;
 const CONTINUE_KEY = "yv_continue_v1";
 const MAX_CONTINUE_ITEMS = 24;
+let activeHls = null;
+let libraryPollTimer = null;
+let libraryRefreshPromise = null;
 
 function esc(value) {
   return String(value || "")
@@ -484,28 +490,202 @@ function parseEpisodeNumber(title, fallback) {
   return m ? Number(m[1]) : fallback;
 }
 
-function buildEpisodes(anime) {
-  const streams = anime.streamingEpisodes || [];
-  if (streams.length) {
-    return streams
-      .map((ep, idx) => ({
-        number: parseEpisodeNumber(ep.title, idx + 1),
-        title: ep.title || `Episodio ${idx + 1}`,
-        thumbnail: ep.thumbnail || bestCover(anime.coverImage),
-        url: ep.url || "",
-        site: ep.site || ""
-      }))
-      .sort((a, b) => a.number - b.number);
+async function requestLibraryEpisodes(animeId) {
+  if (!Number.isInteger(Number(animeId)) || Number(animeId) <= 0) return [];
+  try {
+    const json = await requestJson(`${PROXY_LIBRARY_EPISODES_URL}?animeId=${encodeURIComponent(animeId)}`);
+    return Array.isArray(json?.episodes) ? json.episodes : [];
+  } catch {
+    return [];
   }
+}
 
-  const total = Number(anime.episodes || 12);
-  return Array.from({ length: total }).map((_, i) => ({
-    number: i + 1,
-    title: `Episodio ${i + 1}`,
-    thumbnail: bestCover(anime.coverImage),
-    url: "",
-    site: ""
-  }));
+function normalizeEpisodeState(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function episodeStateLabel(value) {
+  const stateValue = normalizeEpisodeState(value);
+  if (!stateValue) return "Sin solicitar";
+  const labels = {
+    COMPLETED: "Disponible",
+    IDLE: "Sin solicitar",
+    TRANSCODING: "Procesando HLS",
+    UPLOADING: "Subiendo",
+    DEBRID_READY: "Preparando host",
+    DEBRID_CONVERTING: "Descargando en debrid",
+    DEBRID_PENDING: "Esperando debrid",
+    MAGNET_FOUND: "Torrent encontrado",
+    SEARCHING: "Buscando torrent",
+    DOWNLOADING_LOCAL: "Descarga local",
+    DOWNLOADED_LOCAL: "Local",
+    FAILED: "Fallo"
+  };
+  return labels[stateValue] || stateValue;
+}
+
+function buildEpisodeSources(anime, botEpisode, streamEpisode) {
+  const sources = [];
+  if (botEpisode?.hls_url) {
+    sources.push({
+      name: "YumeVerse",
+      type: "hls",
+      url: botEpisode.hls_url
+    });
+  }
+  if (botEpisode?.embed_url) {
+    sources.push({
+      name: "SeekStreaming",
+      type: "embed",
+      url: botEpisode.embed_url
+    });
+  }
+  if (streamEpisode?.url) {
+    sources.push({
+      name: streamEpisode.site || "Externo",
+      type: "external",
+      url: streamEpisode.url,
+      site: streamEpisode.site || ""
+    });
+  }
+  const trailerId = String(anime?.trailer?.id || "").trim();
+  if (String(anime?.trailer?.site || "").toLowerCase() === "youtube" && trailerId) {
+    sources.push({
+      name: "Trailer",
+      type: "trailer",
+      trailerId
+    });
+  }
+  return sources;
+}
+
+function buildEpisodes(anime, libraryEpisodes = []) {
+  const streams = (anime.streamingEpisodes || [])
+    .map((ep, idx) => ({
+      number: parseEpisodeNumber(ep.title, idx + 1),
+      title: ep.title || `Episodio ${idx + 1}`,
+      thumbnail: ep.thumbnail || bestCover(anime.coverImage),
+      url: ep.url || "",
+      site: ep.site || ""
+    }))
+    .sort((a, b) => a.number - b.number);
+
+  const streamMap = new Map(streams.map((ep) => [Number(ep.number || 0), ep]));
+  const botMap = new Map(
+    (Array.isArray(libraryEpisodes) ? libraryEpisodes : [])
+      .map((ep) => ({
+        ...ep,
+        episode_number: Number(ep?.episode_number || 0)
+      }))
+      .filter((ep) => ep.episode_number > 0)
+      .map((ep) => [ep.episode_number, ep])
+  );
+
+  const streamMax = streams.reduce((acc, item) => Math.max(acc, Number(item.number || 0)), 0);
+  const botMax = Array.from(botMap.keys()).reduce((acc, item) => Math.max(acc, Number(item || 0)), 0);
+  const fallbackTotal = Number(anime.episodes || 0) > 0 ? Number(anime.episodes || 0) : 12;
+  const total = Math.max(fallbackTotal, streamMax, botMax);
+
+  return Array.from({ length: total }).map((_, index) => {
+    const number = index + 1;
+    const streamEpisode = streamMap.get(number) || null;
+    const botEpisode = botMap.get(number) || null;
+    return {
+      number,
+      title: streamEpisode?.title || botEpisode?.title || `Episodio ${number}`,
+      thumbnail: streamEpisode?.thumbnail || bestCover(anime.coverImage),
+      url: streamEpisode?.url || "",
+      site: streamEpisode?.site || "",
+      state: normalizeEpisodeState(botEpisode?.state || ""),
+      ready: Boolean(botEpisode?.ready),
+      fileCode: String(botEpisode?.file_code || ""),
+      hlsUrl: String(botEpisode?.hls_url || ""),
+      embedUrl: String(botEpisode?.embed_url || ""),
+      playbackKind: String(botEpisode?.playback_kind || ""),
+      sources: buildEpisodeSources(anime, botEpisode, streamEpisode)
+    };
+  });
+}
+
+function currentEpisode() {
+  return state.episodes[state.currentEpisodeIndex] || null;
+}
+
+function currentEpisodeSources() {
+  return Array.isArray(currentEpisode()?.sources) ? currentEpisode().sources : [];
+}
+
+function ensureCurrentServer() {
+  const sources = currentEpisodeSources();
+  if (!sources.length) {
+    state.currentServer = "";
+    return null;
+  }
+  const selected = sources.find((source) => source.name === state.currentServer);
+  if (selected) return selected;
+  const preferred = sources.find((source) => source.type !== "trailer") || null;
+  if (preferred) {
+    state.currentServer = preferred.name;
+    return preferred;
+  }
+  state.currentServer = "";
+  return null;
+}
+
+function destroyActiveHls() {
+  if (activeHls && typeof activeHls.destroy === "function") {
+    activeHls.destroy();
+  }
+  activeHls = null;
+}
+
+function rebuildEpisodesPreservingSelection() {
+  const selectedNumber = currentEpisode()?.number || state.requestedEpisode || 1;
+  state.episodes = buildEpisodes(state.anime, state.libraryEpisodes);
+  const nextIndex = state.episodes.findIndex((episode) => Number(episode.number) === Number(selectedNumber));
+  state.currentEpisodeIndex = nextIndex >= 0 ? nextIndex : Math.max(0, Math.min(state.requestedEpisode - 1, state.episodes.length - 1));
+}
+
+function stopLibraryPolling() {
+  if (libraryPollTimer) {
+    window.clearInterval(libraryPollTimer);
+    libraryPollTimer = null;
+  }
+}
+
+async function refreshLibraryEpisodes(options = {}) {
+  if (!state.anime) return [];
+  if (libraryRefreshPromise) return libraryRefreshPromise;
+
+  const silent = options.silent !== false;
+  libraryRefreshPromise = (async () => {
+    const episodes = await requestLibraryEpisodes(Number(state.anime.id || 0));
+    state.libraryEpisodes = episodes;
+    rebuildEpisodesPreservingSelection();
+    renderServerTabs();
+    renderPlayer();
+    renderEpisodes();
+    return episodes;
+  })();
+
+  try {
+    return await libraryRefreshPromise;
+  } catch (error) {
+    if (!silent && el.playerNote) {
+      el.playerNote.textContent = `No se pudo refrescar el episodio. ${error.message || ""}`.trim();
+    }
+    throw error;
+  } finally {
+    libraryRefreshPromise = null;
+  }
+}
+
+function startLibraryPolling() {
+  stopLibraryPolling();
+  libraryPollTimer = window.setInterval(() => {
+    if (!state.anime || document.hidden) return;
+    refreshLibraryEpisodes({ silent: true }).catch(() => {});
+  }, 8000);
 }
 
 function commentKey() {
@@ -641,58 +821,132 @@ function renderHeader() {
 }
 
 function renderServerTabs() {
-  el.serverTabs.innerHTML = SERVERS.map((name) => {
+  const sources = currentEpisodeSources();
+  if (!sources.length) {
+    state.currentServer = "";
+    el.serverTabs.innerHTML = `<span class="server-btn active">Sin fuente</span>`;
+    return;
+  }
+
+  ensureCurrentServer();
+  el.serverTabs.innerHTML = sources.map((source) => {
+    const name = source.name || "Fuente";
     const active = name === state.currentServer ? "active" : "";
     return `<button class="server-btn ${active}" type="button" data-server="${esc(name)}">${esc(name)}</button>`;
   }).join("");
 }
 
-function renderPlayer() {
-  const anime = state.anime;
-  const trailer = anime.trailer;
-  const currentEpisode = state.episodes[state.currentEpisodeIndex];
-  const title = pickTitle(anime.title);
-  const epNumber = currentEpisode?.number || 1;
-  el.playerTitle.textContent = `Episodio ${epNumber} - ${title}`;
-
-  if (currentEpisode?.url) {
-    const thumb = String(currentEpisode.thumbnail || bestCover(anime.coverImage)).replace(/'/g, "%27");
-    el.playerArea.innerHTML = `
-      <div class="player-fallback" style="background-image:url('${thumb}')">
-        <div>
-          <h4>${esc(currentEpisode.title)}</h4>
-          <p>Fuente: ${esc(currentEpisode.site || state.currentServer)}</p>
-          <p><a class="btn btn-primary" target="_blank" rel="noopener noreferrer" href="${esc(currentEpisode.url)}">Abrir episodio</a></p>
-        </div>
+function renderRequestFallback(anime, episode) {
+  const poster = bestCover(anime.coverImage);
+  const stateLabel = episodeStateLabel(episode?.state);
+  const loggedIn = Boolean(state.session?.authenticated);
+  const buttonLabel = loggedIn ? `Solicitar episodio ${episode?.number || 1}` : "Inicia sesion para solicitar";
+  el.playerArea.innerHTML = `
+    <div class="player-fallback" style="background-image:url('${poster.replace(/'/g, "%27")}')">
+      <div>
+        <h4>${esc(episode?.title || pickTitle(anime.title))}</h4>
+        <p>Estado: ${esc(stateLabel)}</p>
+        <p>Cuando el pipeline termine, este episodio se reproducira desde SeekStreaming.</p>
+        <p><button class="btn btn-primary" type="button" data-request-episode="${Number(episode?.number || 1)}">${esc(buttonLabel)}</button></p>
       </div>
-    `;
-    el.playerNote.textContent = `Servidor ${state.currentServer} - Episodio ${epNumber}`;
-    updateEpisodeQueryParam(epNumber);
+    </div>
+  `;
+  el.playerNote.textContent = `Episodio ${episode?.number || 1} - ${stateLabel}`;
+}
+
+function renderHlsSource(source, anime, episode) {
+  const poster = bestCover(anime.coverImage);
+  el.playerArea.innerHTML = `<video id="animeVideo" controls playsinline preload="metadata" poster="${esc(poster)}"></video>`;
+  const video = document.getElementById("animeVideo");
+  if (!video) return false;
+
+  if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    video.src = source.url;
+    return true;
+  }
+
+  if (window.Hls && typeof window.Hls.isSupported === "function" && window.Hls.isSupported()) {
+    activeHls = new window.Hls({
+      enableWorker: true,
+      lowLatencyMode: false
+    });
+    activeHls.loadSource(source.url);
+    activeHls.attachMedia(video);
+    activeHls.on(window.Hls.Events.ERROR, (_, data) => {
+      if (data?.fatal && episode?.embedUrl) {
+        destroyActiveHls();
+        el.playerArea.innerHTML = `<iframe src="${esc(episode.embedUrl)}" title="SeekStreaming ${esc(pickTitle(anime.title))}" allowfullscreen loading="lazy" referrerpolicy="strict-origin-when-cross-origin"></iframe>`;
+      }
+    });
+    return true;
+  }
+
+  if (episode?.embedUrl) {
+    el.playerArea.innerHTML = `<iframe src="${esc(episode.embedUrl)}" title="SeekStreaming ${esc(pickTitle(anime.title))}" allowfullscreen loading="lazy" referrerpolicy="strict-origin-when-cross-origin"></iframe>`;
+    return true;
+  }
+
+  return false;
+}
+
+function renderPlayer() {
+  destroyActiveHls();
+  const anime = state.anime;
+  const episode = currentEpisode();
+  const title = pickTitle(anime.title);
+  const epNumber = episode?.number || 1;
+  el.playerTitle.textContent = `Episodio ${epNumber} - ${title}`;
+  updateEpisodeQueryParam(epNumber);
+
+  const selectedSource = ensureCurrentServer();
+  if (!episode) {
+    renderRequestFallback(anime, { number: epNumber, title });
+    return;
+  }
+
+  if (!selectedSource) {
+    renderRequestFallback(anime, episode);
+    return;
+  }
+
+  if (selectedSource.type === "hls" && renderHlsSource(selectedSource, anime, episode)) {
+    el.playerNote.textContent = `Servidor ${selectedSource.name} - HLS externo`;
     persistContinueWatching();
     return;
   }
 
-  const trailerId = String(trailer?.id || "").trim();
-  if (String(trailer?.site || "").toLowerCase() === "youtube" && trailerId) {
-    const src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(trailerId)}?rel=0&modestbranding=1`;
-    el.playerArea.innerHTML = `<iframe src="${src}" title="Trailer ${esc(title)}" allowfullscreen loading="lazy"></iframe>`;
-    el.playerNote.textContent = `Servidor ${state.currentServer} - Mostrando trailer oficial (no stream pirata)`;
-    updateEpisodeQueryParam(epNumber);
+  if (selectedSource.type === "embed" && selectedSource.url) {
+    el.playerArea.innerHTML = `<iframe src="${esc(selectedSource.url)}" title="SeekStreaming ${esc(title)}" allowfullscreen loading="lazy" referrerpolicy="strict-origin-when-cross-origin"></iframe>`;
+    el.playerNote.textContent = `Servidor ${selectedSource.name} - Reproductor externo`;
     persistContinueWatching();
-  } else {
-    const poster = bestCover(anime.coverImage);
+    return;
+  }
+
+  if (selectedSource.type === "external" && selectedSource.url) {
+    const thumb = String(episode.thumbnail || bestCover(anime.coverImage)).replace(/'/g, "%27");
     el.playerArea.innerHTML = `
-      <div class="player-fallback" style="background-image:url('${poster.replace(/'/g, "%27")}')">
+      <div class="player-fallback" style="background-image:url('${thumb}')">
         <div>
-          <h4>${esc(title)}</h4>
-          <p>No hay trailer embebible disponible para este anime.</p>
+          <h4>${esc(episode.title)}</h4>
+          <p>Fuente: ${esc(selectedSource.site || selectedSource.name || state.currentServer)}</p>
+          <p><a class="btn btn-primary" target="_blank" rel="noopener noreferrer" href="${esc(selectedSource.url)}">Abrir episodio</a></p>
         </div>
       </div>
     `;
-    el.playerNote.textContent = `Servidor ${state.currentServer} seleccionado`;
-    updateEpisodeQueryParam(epNumber);
+    el.playerNote.textContent = `Servidor ${state.currentServer} - Episodio ${epNumber}`;
     persistContinueWatching();
+    return;
   }
+
+  if (selectedSource.type === "trailer" && selectedSource.trailerId) {
+    const src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(selectedSource.trailerId)}?rel=0&modestbranding=1`;
+    el.playerArea.innerHTML = `<iframe src="${src}" title="Trailer ${esc(title)}" allowfullscreen loading="lazy"></iframe>`;
+    el.playerNote.textContent = `Servidor ${state.currentServer} - Trailer oficial`;
+    persistContinueWatching();
+    return;
+  }
+
+  renderRequestFallback(anime, episode);
 }
 
 function episodeCount() {
@@ -712,6 +966,7 @@ function renderEpisodes() {
         <span class="episode-info">
           <strong>Episodio ${ep.number}</strong>
           <span>${esc(ep.title || pickTitle(state.anime.title))}</span>
+          <small class="episode-state">${esc(ep.ready ? "Disponible" : episodeStateLabel(ep.state))}</small>
         </span>
       </button>
     `);
@@ -739,6 +994,30 @@ function renderComments() {
     .join("");
 }
 
+async function requestEpisodeFromLibrary(episodeNumber) {
+  if (!state.anime) return;
+  if (!window.YVAuth?.requireAuth("Inicia sesion para solicitar episodios.")) return;
+
+  const safeEpisode = Math.max(1, Number(episodeNumber || currentEpisode()?.number || 1));
+  const response = await requestJson(PROXY_LIBRARY_REQUEST_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      animeId: Number(state.anime.id || 0),
+      episode: safeEpisode,
+      searchMode: "AUTO"
+    })
+  });
+
+  if (!response?.ok) {
+    throw new Error(String(response?.error || "No se pudo solicitar el episodio"));
+  }
+
+  await refreshLibraryEpisodes({ silent: false });
+}
+
 function bindEvents() {
   el.serverTabs.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-server]");
@@ -752,8 +1031,23 @@ function bindEvents() {
     const btn = e.target.closest("[data-episode-index]");
     if (!btn) return;
     state.currentEpisodeIndex = Number(btn.dataset.episodeIndex);
+    renderServerTabs();
     renderEpisodes();
     renderPlayer();
+  });
+
+  el.playerArea.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-request-episode]");
+    if (!btn) return;
+    const episode = Number(btn.dataset.requestEpisode || 0);
+    btn.disabled = true;
+    try {
+      await requestEpisodeFromLibrary(episode);
+      el.playerNote.textContent = `Solicitud enviada para episodio ${episode}.`;
+    } catch (error) {
+      el.playerNote.textContent = `No se pudo solicitar el episodio. ${error.message || ""}`;
+      btn.disabled = false;
+    }
   });
 
   el.episodeSearch.addEventListener("input", renderEpisodes);
@@ -784,6 +1078,8 @@ function bindEvents() {
       await toggleList("pending");
     });
   }
+
+  window.addEventListener("beforeunload", stopLibraryPolling);
 }
 
 async function main() {
@@ -819,11 +1115,8 @@ async function main() {
 
     state.anime = await enhanceAnimeImageQuality(anime);
     state.synopsisEs = "Cargando sinopsis...";
-    state.episodes = buildEpisodes(state.anime);
-    state.currentEpisodeIndex = Math.min(
-      Math.max(0, state.requestedEpisode - 1),
-      Math.max(0, state.episodes.length - 1)
-    );
+    state.libraryEpisodes = await requestLibraryEpisodes(Number(state.anime.id || 0));
+    rebuildEpisodesPreservingSelection();
     renderHeader();
     state.synopsisEs = await buildSpanishSynopsis(anime);
     renderHeader();
@@ -835,6 +1128,7 @@ async function main() {
     loadComments();
     renderComments();
     bindEvents();
+    startLibraryPolling();
   } catch (error) {
     el.animeTitle.textContent = "Error de carga";
     el.animeDescription.textContent = `No se pudo cargar el anime. ${error.message || ""}`;

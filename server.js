@@ -87,6 +87,9 @@ const SESSION_COOKIE_SECURE_MODE = String(process.env.SESSION_COOKIE_SECURE || "
   .toLowerCase();
 
 const APP_BASE_URL = String(process.env.APP_BASE_URL || "").trim();
+const AUTOMATOR_API_BASE_URL = String(process.env.AUTOMATOR_API_BASE_URL || "http://127.0.0.1:8000")
+  .trim()
+  .replace(/\/+$/, "");
 const SMTP_HOST = String(process.env.SMTP_HOST || "").trim();
 const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
 const SMTP_USER = String(process.env.SMTP_USER || "").trim();
@@ -163,6 +166,53 @@ query RecommendationPool {
 }
 `;
 
+const launchCatalogHomeQuery = `
+query LaunchCatalogHome($season: MediaSeason, $seasonYear: Int) {
+  trending: Page(page: 1, perPage: 12) {
+    media(type: ANIME, sort: TRENDING_DESC) {
+      id
+      idMal
+      title { romaji english native }
+      episodes
+      averageScore
+      seasonYear
+      status
+      genres
+      coverImage { extraLarge large medium }
+      bannerImage
+    }
+  }
+  season: Page(page: 1, perPage: 6) {
+    media(type: ANIME, sort: POPULARITY_DESC, season: $season, seasonYear: $seasonYear) {
+      id
+      idMal
+      title { romaji english native }
+      episodes
+      averageScore
+      seasonYear
+      status
+      genres
+      coverImage { extraLarge large medium }
+      bannerImage
+    }
+  }
+  top: Page(page: 1, perPage: 10) {
+    media(type: ANIME, sort: SCORE_DESC) {
+      id
+      idMal
+      title { romaji english native }
+      episodes
+      averageScore
+      seasonYear
+      status
+      genres
+      coverImage { extraLarge large medium }
+      bannerImage
+    }
+  }
+}
+`;
+
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 const smtpReady = Boolean(nodemailer && SMTP_HOST && SMTP_FROM && Number.isFinite(SMTP_PORT) && SMTP_PORT > 0);
 const mailTransport = smtpReady
@@ -184,6 +234,17 @@ function now() {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function nowSeasonInfo() {
+  const d = new Date();
+  const month = d.getMonth() + 1;
+  const year = d.getFullYear();
+  let season = "WINTER";
+  if (month >= 3 && month <= 5) season = "SPRING";
+  if (month >= 6 && month <= 8) season = "SUMMER";
+  if (month >= 9 && month <= 11) season = "FALL";
+  return { season, seasonYear: year };
 }
 
 function cacheGet(key) {
@@ -1092,6 +1153,103 @@ function toRecommendationItem(media) {
     episodes: Number(media?.episodes || 0) || 0,
     seasonYear: Number(media?.seasonYear || 0) || 0,
     genres: sanitizeGenres(media?.genres || [], 8)
+  };
+}
+
+function inferLaunchDownloadPolicy(media, sectionId, slot) {
+  const episodes = Number(media?.episodes || 0) || 0;
+  const score = Number(media?.averageScore || 0) || 0;
+  const status = cleanText(media?.status || "").toUpperCase();
+  const isFrontSlot = Number(slot || 0) > 0 && Number(slot || 0) <= 4;
+  const isLongRunning = episodes > 0 && episodes >= 60;
+  const isMidRunning = episodes > 0 && episodes >= 25;
+  const isShortFinished = episodes > 0 && episodes <= 14;
+  const isStandardFinished = episodes > 0 && episodes <= 28;
+
+  if (status === "NOT_YET_RELEASED") return "LATEST_ONLY";
+  if (status === "RELEASING") {
+    if (episodes <= 0) return "LATEST_ONLY";
+    if (isLongRunning) return "LATEST_ONLY";
+    if (sectionId === "top") return isFrontSlot ? "EP1_PLUS_LATEST" : "LATEST_ONLY";
+    if (isMidRunning) return isFrontSlot ? "EP1_PLUS_LATEST" : "LATEST_ONLY";
+    return "EP1_PLUS_LATEST";
+  }
+  if (episodes <= 0) return sectionId === "top" ? "LATEST_ONLY" : "EP1_PLUS_LATEST";
+  if (isShortFinished) return "FULL_SEASON";
+  if (isStandardFinished) {
+    if (sectionId === "trending" || sectionId === "season" || isFrontSlot || score >= 80) {
+      return "FULL_SEASON";
+    }
+    return "EP1_PLUS_LATEST";
+  }
+  if (sectionId === "top" && episodes > 120) return "LATEST_ONLY";
+  if (isLongRunning) return "LATEST_ONLY";
+  if (isMidRunning) return "EP1_PLUS_LATEST";
+  return "FULL_SEASON";
+}
+
+function toLaunchCatalogItem(media, slot, sectionId) {
+  const animeId = Number(media?.id || 0);
+  if (!animeId) return null;
+  return {
+    anime_id: animeId,
+    title: pickTitle(media?.title),
+    slot,
+    download_policy: inferLaunchDownloadPolicy(media, sectionId, slot),
+    launch_required: true
+  };
+}
+
+function buildLaunchCatalogSection(sectionId, label, weight, requiredReadyRatio, list) {
+  const items = dedupeMedia(list || [])
+    .map((media, idx) => toLaunchCatalogItem(media, idx + 1, sectionId))
+    .filter(Boolean);
+  return {
+    id: sectionId,
+    label,
+    weight,
+    required_ready_ratio: requiredReadyRatio,
+    items
+  };
+}
+
+async function buildLaunchCatalogManifest() {
+  const seasonInfo = nowSeasonInfo();
+  const upstream = await fetchJson(ANILIST_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    body: JSON.stringify({
+      query: launchCatalogHomeQuery,
+      variables: seasonInfo
+    })
+  });
+
+  if (!upstream.ok || upstream.json?.errors) {
+    throw new Error("No se pudo construir el snapshot de portada desde AniList");
+  }
+
+  const data = upstream.json?.data || {};
+  const sections = [
+    buildLaunchCatalogSection("trending", "Tendencias", 85, 1.0, data?.trending?.media || []),
+    buildLaunchCatalogSection("season", "Temporada", 80, 0.95, data?.season?.media || []),
+    buildLaunchCatalogSection("top", "Top", 70, 0.9, data?.top?.media || [])
+  ];
+  const itemCount = sections.reduce((sum, section) => sum + (section.items || []).length, 0);
+
+  return {
+    version: `launch-auto-${new Date().toISOString().slice(0, 10)}`,
+    mode: "launch_locked",
+    cutoff_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    generated_at: nowIso(),
+    source: "web_home",
+    sections,
+    counts: {
+      sections: sections.length,
+      items: itemCount
+    }
   };
 }
 
@@ -2737,6 +2895,142 @@ async function handleProfileRecommendations(req, res) {
   }
 }
 
+async function handleLaunchCatalog(req, res) {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { error: "Metodo no permitido" });
+    return;
+  }
+
+  try {
+    const manifest = await buildLaunchCatalogManifest();
+    sendJson(res, 200, {
+      ok: true,
+      manifest,
+      counts: manifest.counts || { sections: 0, items: 0 }
+    });
+  } catch (error) {
+    sendJson(res, 502, {
+      ok: false,
+      error: "No se pudo generar el manifest desde la portada",
+      details: String(error.message || error)
+    });
+  }
+}
+
+function automatorUrl(pathname, searchParams = null) {
+  if (!AUTOMATOR_API_BASE_URL) return null;
+  const url = new URL(pathname, `${AUTOMATOR_API_BASE_URL}/`);
+  if (searchParams && typeof searchParams === "object") {
+    Object.entries(searchParams).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === "") return;
+      url.searchParams.set(key, String(value));
+    });
+  }
+  return url.toString();
+}
+
+async function handleLibraryEpisodes(req, res, parsedUrl) {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { error: "Metodo no permitido" });
+    return;
+  }
+
+  const animeId = Number(parsedUrl.searchParams.get("animeId") || 0);
+  if (!Number.isInteger(animeId) || animeId <= 0) {
+    sendJson(res, 400, { error: "animeId invalido" });
+    return;
+  }
+
+  const target = automatorUrl(`/api/public/anime/${animeId}/episodes`);
+  if (!target) {
+    sendJson(res, 200, { ok: false, episodes: [], warning: "Automator no configurado" });
+    return;
+  }
+
+  try {
+    const upstream = await fetchJson(target, { headers: { Accept: "application/json" } });
+    if (!upstream.ok) {
+      sendJson(res, 200, {
+        ok: false,
+        episodes: [],
+        warning: "Biblioteca no disponible",
+        details: upstream.json
+      });
+      return;
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      episodes: Array.isArray(upstream.json?.episodes) ? upstream.json.episodes : []
+    });
+  } catch (error) {
+    sendJson(res, 200, {
+      ok: false,
+      episodes: [],
+      warning: String(error.message || error || "Biblioteca no disponible")
+    });
+  }
+}
+
+async function handleLibraryRequest(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Metodo no permitido" });
+    return;
+  }
+
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+
+  const body = await readJsonBody(req, res);
+  if (body === null) return;
+
+  const animeId = Number(body?.animeId || 0);
+  const episode = Number(body?.episode || 0);
+  const searchMode = String(body?.searchMode || "AUTO").trim().toUpperCase();
+
+  if (!Number.isInteger(animeId) || animeId <= 0) {
+    sendJson(res, 400, { error: "animeId invalido" });
+    return;
+  }
+  if (!Number.isInteger(episode) || episode <= 0) {
+    sendJson(res, 400, { error: "episode invalido" });
+    return;
+  }
+
+  const target = automatorUrl("/api/enqueue");
+  if (!target) {
+    sendJson(res, 502, { error: "Automator no configurado" });
+    return;
+  }
+
+  try {
+    const upstream = await fetchJson(target, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({
+        anime_id: animeId,
+        episode,
+        search_mode: searchMode
+      })
+    });
+
+    if (!upstream.ok) {
+      sendJson(res, upstream.status || 502, {
+        error: String(upstream.json?.error || "No se pudo solicitar el episodio"),
+        details: upstream.json
+      });
+      return;
+    }
+
+    sendJson(res, 200, upstream.json || { ok: true });
+  } catch (error) {
+    sendJson(res, 502, { error: String(error.message || error || "Automator no disponible") });
+  }
+}
+
 async function handleAniList(req, res) {
   if (req.method !== "POST") {
     sendJson(res, 405, { error: "Metodo no permitido" });
@@ -3196,6 +3490,21 @@ const server = http.createServer(async (req, res) => {
 
     if (parsedUrl.pathname === "/api/profile/recommendations") {
       await handleProfileRecommendations(req, res);
+      return;
+    }
+
+    if (parsedUrl.pathname === "/api/catalog/launch") {
+      await handleLaunchCatalog(req, res);
+      return;
+    }
+
+    if (parsedUrl.pathname === "/api/library/episodes") {
+      await handleLibraryEpisodes(req, res, parsedUrl);
+      return;
+    }
+
+    if (parsedUrl.pathname === "/api/library/request") {
+      await handleLibraryRequest(req, res);
       return;
     }
 

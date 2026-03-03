@@ -1,0 +1,233 @@
+{
+  "version": "launch-auto-2026-03-02",
+  "mode": "launch_locked",
+  "cutoff_at": "2026-03-09T23:24:07Z",
+  "generated_at": "2026-03-02T23:24:07Z",
+  "source": "anilist_home_fallback",
+  "sections": [
+    {
+      "id": "trending",
+      "label": "Tendencias",
+      "weight": 85,
+      "required_ready_ratio": 1.0,
+      "items": [
+        {
+          "anime_id": 166613,
+          "title": "Hell’s Paradise Season 2",
+          "slot": 1,
+          "download_policy": "EP1_PLUS_LATEST",
+          "launch_required": true
+        },
+        {
+          "anime_id": 195322,
+          "title": "My Hero Academia: Vigilantes Season 2",
+          "slot": 2,
+          "download_policy": "EP1_PLUS_LATEST",
+          "launch_required": true
+        },
+        {
+          "anime_id": 182255,
+          "title": "Frieren: Beyond Journey’s End Season 2",
+          "slot": 3,
+          "download_policy": "EP1_PLUS_LATEST",
+          "launch_required": true
+        },
+        {
+          "anime_id": 172463,
+          "title": "JUJUTSU KAISEN Season 3: The Culling Game Part 1",
+          "slot": 4,
+          "download_policy": "EP1_PLUS_LATEST",
+          "launch_required": true
+        },
+        {
+          "anime_id": 184951,
+          "title": "You and I Are Polar Opposites",
+          "slot": 5,
+          "download_policy": "EP1_PLUS_LATEST",
+          "launch_required": true
+        },
+        {
+          "anime_id": 21,
+          "title": "ONE PIECE",
+          "slot": 6,
+          "download_policy": "LATEST_ONLY",
+          "launch_required": true
+        },
+        {
+          "anime_id": 167152,
+          "title": "Sentenced to Be a Hero",
+          "slot": 7,
+          "download_policy": "EP1_PLUS_LATEST",
+          "launch_required": true
+        },
+        {
+          "anime_id": 189565,
+          "title": "You Can't Be In a Rom-Com with Your Childhood Friends!",
+          "slot": 8,
+          "download_policy": "EP1_PLUS_LATEST",
+          "launch_required": true
+        },
+        {
+          "anime_id": 177385,
+          "title": "Journal with Witch",
+          "slot": 9,
+          "download_policy": "EP1_PLUS_LATEST",
+          "launch_required": true
+        },
+        {
+          "anime_id": 166617,
+          "title": "Fate/strange Fake",
+          "slot": 10,
+          "download_policy": "EP1_PLUS_LATEST",
+          "launch_required": true
+        },
+        {
+          "anime_id": 194028,
+          "title": "Wash It All Away",
+          "slot": 11,
+          "download_policy": "EP1_PLUS_LATEST",
+          "launch_required": true
+        },
+        {
+          "anime_id": 166521,
+          "title": "Golden Kamuy Final Season",
+          "slot": 12,
+          "download_policy": "EP1_PLUS_LATEST",
+          "launch_required": true
+        }
+      ]
+    },
+    {
+      "id": "season",
+      "label": "Temporada",
+      "weight": 80,
+      "required_ready_ratio": 0.95,
+      "items": [
+        {
+          "anime_id": 147105,
+          "title": "Witch Hat Atelier",
+          "slot": 1,
+          "download_policy": "LATEST_ONLY",
+          "launch_required": true
+        },
+        {
+          "anime_id": 189046,
+          "title": "Re:ZERO - Starting Life in Another World- Season 4",
+          "slot": 2,
+          "download_policy": "LATEST_ONLY",
+          "launch_required": true
+        },
+        {
+          "anime_id": 182205,
+          "title": "That Time I Got Reincarnated as a Slime Season 4",
+          "slot": 3,
+          "download_policy": "LATEST_ONLY",
+          "launch_required": true
+        },
+        {
+          "anime_id": 180745,
+          "title": "Classroom of the Elite 2nd Year",
+          "slot": 4,
+          "download_policy": "LATEST_ONLY",
+          "launch_required": true
+        },
+        {
+          "anime_id": 170019,
+          "title": "Otonari no Tenshi-sama ni Itsunomanika Dame Ningen ni Sareteita Ken 2nd Season",
+          "slot": 5,
+          "download_policy": "LATEST_ONLY",
+          "launch_required": true
+        },
+        {
+          "anime_id": 182300,
+          "title": "Tsue to Tsurugi no Wistoria Season 2",
+          "slot": 6,
+          "download_policy": "LATEST_ONLY",
+          "launch_required": true
+        }
+      ]
+    },
+    {
+      "id": "top",
+      "label": "Top",
+      "weight": 70,
+      "required_ready_ratio": 0.9,
+      "items": [
+        {
+          "anime_id": 154587,
+          "title": "Frieren: Beyond Journey’s End",
+          "slot": 1,
+          "download_policy": "FULL_SEASON",
+          "launch_required": true
+        },
+        {
+          "anime_id": 114129,
+          "title": "Gintama: THE VERY FINAL",
+          "slot": 2,
+          "download_policy": "FULL_SEASON",
+          "launch_required": true
+        },
+        {
+          "anime_id": 20996,
+          "title": "Gintama Season 3",
+          "slot": 3,
+          "download_policy": "EP1_PLUS_LATEST",
+          "launch_required": true
+        },
+        {
+          "anime_id": 171627,
+          "title": "Chainsaw Man – The Movie: Reze Arc",
+          "slot": 4,
+          "download_policy": "FULL_SEASON",
+          "launch_required": true
+        },
+        {
+          "anime_id": 182469,
+          "title": "ONE PIECE FAN LETTER",
+          "slot": 5,
+          "download_policy": "FULL_SEASON",
+          "launch_required": true
+        },
+        {
+          "anime_id": 5114,
+          "title": "Fullmetal Alchemist: Brotherhood",
+          "slot": 6,
+          "download_policy": "LATEST_ONLY",
+          "launch_required": true
+        },
+        {
+          "anime_id": 124194,
+          "title": "Fruits Basket The Final Season",
+          "slot": 7,
+          "download_policy": "FULL_SEASON",
+          "launch_required": true
+        },
+        {
+          "anime_id": 104578,
+          "title": "Attack on Titan Season 3 Part 2",
+          "slot": 8,
+          "download_policy": "FULL_SEASON",
+          "launch_required": true
+        },
+        {
+          "anime_id": 21745,
+          "title": "Owarimonogatari Second Season",
+          "slot": 9,
+          "download_policy": "FULL_SEASON",
+          "launch_required": true
+        },
+        {
+          "anime_id": 9253,
+          "title": "Steins;Gate",
+          "slot": 10,
+          "download_policy": "FULL_SEASON",
+          "launch_required": true
+        }
+      ]
+    }
+  ],
+  "counts": {
+    "sections": 3,
+    "items": 28
+  }
+}
