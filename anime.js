@@ -79,13 +79,15 @@ const state = {
   synopsisEs: "",
   episodes: [],
   libraryEpisodes: [],
+  libraryWarning: "",
   requestedEpisode: 1,
   currentEpisodeIndex: 0,
   currentServer: "",
   comments: [],
   session: { authenticated: false },
   favoriteActive: false,
-  pendingActive: false
+  pendingActive: false,
+  lastPlayerKey: ""
 };
 
 const bannerMetaCache = new Map();
@@ -491,12 +493,20 @@ function parseEpisodeNumber(title, fallback) {
 }
 
 async function requestLibraryEpisodes(animeId) {
-  if (!Number.isInteger(Number(animeId)) || Number(animeId) <= 0) return [];
+  if (!Number.isInteger(Number(animeId)) || Number(animeId) <= 0) {
+    return { episodes: [], warning: "" };
+  }
   try {
     const json = await requestJson(`${PROXY_LIBRARY_EPISODES_URL}?animeId=${encodeURIComponent(animeId)}`);
-    return Array.isArray(json?.episodes) ? json.episodes : [];
-  } catch {
-    return [];
+    return {
+      episodes: Array.isArray(json?.episodes) ? json.episodes : [],
+      warning: String(json?.warning || "")
+    };
+  } catch (error) {
+    return {
+      episodes: [],
+      warning: String(error?.message || "fetch failed")
+    };
   }
 }
 
@@ -522,6 +532,14 @@ function episodeStateLabel(value) {
     FAILED: "Fallo"
   };
   return labels[stateValue] || stateValue;
+}
+
+function displayEpisodeState(episode) {
+  const normalized = normalizeEpisodeState(episode?.state);
+  if (!normalized && state.libraryWarning && !episode?.ready) {
+    return "Backend desconectado";
+  }
+  return episodeStateLabel(normalized);
 }
 
 function buildEpisodeSources(anime, botEpisode, streamEpisode) {
@@ -615,21 +633,43 @@ function currentEpisodeSources() {
   return Array.isArray(currentEpisode()?.sources) ? currentEpisode().sources : [];
 }
 
-function ensureCurrentServer() {
-  const sources = currentEpisodeSources();
+function resolveSourceForEpisode(episode, preferredServer = "") {
+  const sources = Array.isArray(episode?.sources) ? episode.sources : [];
   if (!sources.length) {
+    return null;
+  }
+  const preferred = sources.find((source) => source.name === preferredServer);
+  if (preferred) {
+    return preferred;
+  }
+  return sources.find((source) => source.type !== "trailer") || sources[0] || null;
+}
+
+function playerRenderKeyForEpisode(episode, preferredServer = "") {
+  if (!episode) {
+    return `none:${preferredServer || ""}`;
+  }
+  const source = resolveSourceForEpisode(episode, preferredServer);
+  return JSON.stringify({
+    episode: Number(episode?.number || 0),
+    server: String(source?.name || ""),
+    type: String(source?.type || ""),
+    url: String(source?.url || source?.trailerId || ""),
+    state: String(episode?.state || ""),
+    ready: Boolean(episode?.ready),
+    playbackKind: String(episode?.playbackKind || "")
+  });
+}
+
+function ensureCurrentServer() {
+  const episode = currentEpisode();
+  const selected = resolveSourceForEpisode(episode, state.currentServer);
+  if (!selected) {
     state.currentServer = "";
     return null;
   }
-  const selected = sources.find((source) => source.name === state.currentServer);
-  if (selected) return selected;
-  const preferred = sources.find((source) => source.type !== "trailer") || null;
-  if (preferred) {
-    state.currentServer = preferred.name;
-    return preferred;
-  }
-  state.currentServer = "";
-  return null;
+  state.currentServer = selected.name || "";
+  return selected;
 }
 
 function destroyActiveHls() {
@@ -656,14 +696,25 @@ function stopLibraryPolling() {
 async function refreshLibraryEpisodes(options = {}) {
   if (!state.anime) return [];
   if (libraryRefreshPromise) return libraryRefreshPromise;
+  const preservePlayer = options.preservePlayer !== false;
 
   const silent = options.silent !== false;
   libraryRefreshPromise = (async () => {
-    const episodes = await requestLibraryEpisodes(Number(state.anime.id || 0));
-    state.libraryEpisodes = episodes;
+    const previousPlayerKey = playerRenderKeyForEpisode(currentEpisode(), state.currentServer);
+    const result = await requestLibraryEpisodes(Number(state.anime.id || 0));
+    const episodes = Array.isArray(result?.episodes) ? result.episodes : [];
+    state.libraryWarning = String(result?.warning || "").trim();
+    if (!state.libraryWarning || episodes.length || !state.libraryEpisodes.length) {
+      state.libraryEpisodes = episodes;
+    }
     rebuildEpisodesPreservingSelection();
     renderServerTabs();
-    renderPlayer();
+    const nextPlayerKey = playerRenderKeyForEpisode(currentEpisode(), state.currentServer);
+    if (!preservePlayer || previousPlayerKey !== nextPlayerKey) {
+      renderPlayer();
+    } else {
+      state.lastPlayerKey = nextPlayerKey;
+    }
     renderEpisodes();
     return episodes;
   })();
@@ -838,19 +889,30 @@ function renderServerTabs() {
 
 function renderRequestFallback(anime, episode) {
   const poster = bestCover(anime.coverImage);
-  const stateLabel = episodeStateLabel(episode?.state);
+  const stateLabel = displayEpisodeState(episode);
   const loggedIn = Boolean(state.session?.authenticated);
   const buttonLabel = loggedIn ? `Solicitar episodio ${episode?.number || 1}` : "Inicia sesion para solicitar";
+  const backendUnavailable = Boolean(state.libraryWarning) && !episode?.ready && !normalizeEpisodeState(episode?.state);
+  const detailText = backendUnavailable
+    ? "El bot local no responde ahora mismo. La web no puede comprobar ni solicitar episodios hasta que vuelva a conectar."
+    : "Cuando el pipeline termine, este episodio se reproducira desde SeekStreaming.";
+  const actionHtml = backendUnavailable
+    ? `<p class="player-warning">${esc(state.libraryWarning || "Backend desconectado")}</p>`
+    : `<p><button class="btn btn-primary" type="button" data-request-episode="${Number(episode?.number || 1)}">${esc(buttonLabel)}</button></p>`;
   el.playerArea.innerHTML = `
     <div class="player-fallback" style="background-image:url('${poster.replace(/'/g, "%27")}')">
       <div>
         <h4>${esc(episode?.title || pickTitle(anime.title))}</h4>
         <p>Estado: ${esc(stateLabel)}</p>
-        <p>Cuando el pipeline termine, este episodio se reproducira desde SeekStreaming.</p>
-        <p><button class="btn btn-primary" type="button" data-request-episode="${Number(episode?.number || 1)}">${esc(buttonLabel)}</button></p>
+        <p>${esc(detailText)}</p>
+        ${actionHtml}
       </div>
     </div>
   `;
+  if (backendUnavailable) {
+    el.playerNote.textContent = `Episodio ${episode?.number || 1} - Backend desconectado`;
+    return;
+  }
   el.playerNote.textContent = `Episodio ${episode?.number || 1} - ${stateLabel}`;
 }
 
@@ -900,14 +962,18 @@ function renderPlayer() {
 
   const selectedSource = ensureCurrentServer();
   if (!episode) {
+    state.lastPlayerKey = playerRenderKeyForEpisode(null, state.currentServer);
     renderRequestFallback(anime, { number: epNumber, title });
     return;
   }
 
   if (!selectedSource) {
+    state.lastPlayerKey = playerRenderKeyForEpisode(episode, state.currentServer);
     renderRequestFallback(anime, episode);
     return;
   }
+
+  state.lastPlayerKey = playerRenderKeyForEpisode(episode, state.currentServer);
 
   if (selectedSource.type === "hls" && renderHlsSource(selectedSource, anime, episode)) {
     el.playerNote.textContent = `Servidor ${selectedSource.name} - HLS externo`;
@@ -966,7 +1032,7 @@ function renderEpisodes() {
         <span class="episode-info">
           <strong>Episodio ${ep.number}</strong>
           <span>${esc(ep.title || pickTitle(state.anime.title))}</span>
-          <small class="episode-state">${esc(ep.ready ? "Disponible" : episodeStateLabel(ep.state))}</small>
+          <small class="episode-state">${esc(ep.ready ? "Disponible" : displayEpisodeState(ep))}</small>
         </span>
       </button>
     `);
@@ -1115,7 +1181,9 @@ async function main() {
 
     state.anime = await enhanceAnimeImageQuality(anime);
     state.synopsisEs = "Cargando sinopsis...";
-    state.libraryEpisodes = await requestLibraryEpisodes(Number(state.anime.id || 0));
+    const libraryResult = await requestLibraryEpisodes(Number(state.anime.id || 0));
+    state.libraryWarning = String(libraryResult?.warning || "").trim();
+    state.libraryEpisodes = Array.isArray(libraryResult?.episodes) ? libraryResult.episodes : [];
     rebuildEpisodesPreservingSelection();
     renderHeader();
     state.synopsisEs = await buildSpanishSynopsis(anime);

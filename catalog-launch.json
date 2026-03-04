@@ -171,7 +171,7 @@
           "anime_id": 20996,
           "title": "Gintama Season 3",
           "slot": 3,
-          "download_policy": "EP1_PLUS_LATEST",
+          "download_policy": "FULL_SEASON",
           "launch_required": true
         },
         {
